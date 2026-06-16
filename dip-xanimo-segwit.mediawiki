@@ -1,0 +1,241 @@
+<pre>
+  DIP: (unassigned — do not self-assign; editor will number)
+  Layer: Consensus (soft fork)
+  Title: Segregated Witness activation for Dogecoin
+  Author: xanimo <bluezr@dogecoin.com>
+  Comments-URI: (to be assigned)
+  Status: Draft
+  Type: Standards Track
+  Created: 2026-06-16
+  License: BSD-2-Clause
+  Requires: BIP141, BIP143, BIP144, BIP147, BIP173
+</pre>
+
+''' Draft for discussion. ''' This document deliberately does '''not''' recommend a single activation mechanism. Its purpose is to frame the problem, present the viable options neutrally, and gather community and stakeholder input before any mechanism is chosen. Nothing here should be read as a settled decision.
+
+== Abstract ==
+
+This DIP proposes adding Segregated Witness (SegWit) to Dogecoin by deriving from BIP141 (segwit), BIP143 (signature verification), BIP144 (peer services), BIP147 (NULLDUMMY), and BIP173 (bech32 addresses), with the Dogecoin-specific modifications required to make activation possible on a chain whose block <code>nVersion</code> field is already used by AuxPoW.
+
+The consensus-validation, script-interpreter, serialization, and weight machinery for SegWit are already present in Dogecoin Core, inherited from Bitcoin Core, but have never been activated. A working bech32/witness address layer and <code>getnewaddress</code> wallet support have been implemented and verified on regtest. The single unresolved blocker is '''activation signaling''': the AuxPoW chain ID occupies the same high bits of <code>nVersion</code> that BIP9 versionbits requires, so standard BIP9 miner signaling cannot work as-is. This DIP documents that collision and presents three candidate activation mechanisms for the community to choose between.
+
+== Motivation ==
+
+SegWit provides transaction malleability fixes, a foundation for second-layer protocols (payment channels, which prior DIP drafts on CSV and channel primitives depend on), witness-discounted block capacity, and native bech32 addresses. Dogecoin already carries the dormant consensus code; the question is not whether the feature can be built but how it can be safely turned on given Dogecoin's merge-mining architecture.
+
+This proposal exists because the obvious path — "do what Bitcoin did, BIP9 versionbits on bit 1" — is not available to Dogecoin without modification, and the reason is subtle enough that it deserves a written, reviewable explanation before any activation parameters are debated.
+
+== The core problem: AuxPoW / versionbits collision ==
+
+Dogecoin reuses the 32-bit block-header <code>nVersion</code> field for two unrelated purposes that overlap in the high bits.
+
+'''AuxPoW chain ID encoding''' (<code>src/primitives/pureheader.h</code>):
+
+<source lang="cpp">
+static const int32_t VERSION_AUXPOW      = (1 << 8);   // bit 8: auxpow flag
+static const int32_t VERSION_CHAIN_START = (1 << 16);  // bits 16+: chain ID
+
+int32_t GetChainId() const   { return nVersion >> 16; }
+void    SetBaseVersion(int32_t nBaseVersion, int32_t nChainId) {
+    nVersion = nBaseVersion | (nChainId * VERSION_CHAIN_START);
+}
+int32_t GetBaseVersion() const { return nVersion % VERSION_AUXPOW; } // low 8 bits
+</source>
+
+Layout of a merge-mined Dogecoin block's <code>nVersion</code>:
+
+<pre>
+  bit 31 ............ 16 | 15 ...... 9 | 8 | 7 ........ 0
+  +---------------------+-------------+---+-------------+
+  |   AuxPoW chain ID   |  reserved   |aux|  base ver   |
+  +---------------------+-------------+---+-------------+
+</pre>
+
+The mainnet/testnet chain ID is <code>0x0062</code> (<code>consensus.nAuxpowChainId</code>). Encoded into the header that is <code>0x0062 << 16 = 0x00620000</code>.
+
+'''BIP9 versionbits''' (<code>src/versionbits.h</code>) requires the opposite:
+
+<source lang="cpp">
+static const int32_t VERSIONBITS_TOP_BITS = 0x20000000UL; // top 3 bits = 0b001
+static const int32_t VERSIONBITS_TOP_MASK = 0xE0000000UL;
+</source>
+
+A block only counts as a versionbits signal when <code>(nVersion & VERSIONBITS_TOP_MASK) == VERSIONBITS_TOP_BITS</code> — top three bits <code>001</code>, low 29 bits carrying deployment signals.
+
+These are mutually exclusive for a real Dogecoin block:
+
+* Chain ID <code>0x0062</code> sits at bits 16–22; the top three bits of <code>0x00620000</code> are <code>000</code>, not <code>001</code>. An AuxPoW-tagged block therefore '''fails''' <code>VERSIONBITS_TOP_MASK</code>, so <code>VersionBitsState()</code> never sees it as a signal.
+* Conversely, setting <code>0x20000000</code> to signal SegWit (bit 1) would overwrite the chain-ID region, breaking <code>GetChainId()</code> and failing the strict chain-ID check in AuxPoW proof-of-work validation.
+
+There is no <code>nVersion</code> value that is simultaneously a valid AuxPoW header for chain <code>0x0062</code> and a valid BIP9 signal. This is why Dogecoin never shipped SegWit when Bitcoin did, and it is the central decision this DIP raises.
+
+=== Current code state (the safety property) ===
+
+The miner sidesteps the collision by refusing to signal (<code>src/miner.cpp</code>):
+
+<source lang="cpp">
+// FIXME: Active version bits after the always-auxpow fork!
+// const int32_t nVersion = ComputeBlockVersion(pindexPrev, consensus);
+const int32_t nVersion = VERSIONBITS_LAST_OLD_BLOCK_VERSION;   // == 4
+pblock->SetBaseVersion(nVersion, nChainId);
+</source>
+
+Because the miner emits version <code>4</code> and never sets bit 1, <code>VersionBitsState(... DEPLOYMENT_SEGWIT ...)</code> can never reach <code>LOCKED_IN</code> or <code>ACTIVE</code> on a chain of real blocks, and the witness-commitment enforcement in <code>ContextualCheckBlock</code> (gated on <code>THRESHOLD_ACTIVE</code>) never engages. Setting <code>DEPLOYMENT_SEGWIT.nTimeout</code> to a future date is therefore currently '''inert''' — it cannot activate anything while the miner does not signal. This is the property that protects mainnet today, and it is why the activation commit in the reference implementation is marked DO NOT MERGE.
+
+== What is already complete ==
+
+To scope the work correctly: the consumption side of SegWit is fully present in Dogecoin Core (inherited from Bitcoin Core 0.13–0.17) and verified by direct read of the reference branch. The blocker is exclusively activation signaling.
+
+{| class="wikitable"
+! Component !! Status !! Location
+|-
+| <code>IsWitnessEnabled()</code> reads versionbits state || complete (gated false on mainnet/testnet) || <code>validation.cpp</code>
+|-
+| Witness-commitment verification (merkle root, coinbase nonce, <code>0xaa21a9ed</code> match, <code>unexpected-witness</code> reject, weight order) || complete || <code>ContextualCheckBlock</code>, <code>validation.cpp</code>
+|-
+| Script verification (<code>VerifyWitnessProgram</code> P2WPKH/P2WSH, <code>SCRIPT_VERIFY_WITNESS</code> flag plumbing) || complete || <code>script/interpreter.cpp</code>, <code>validation.cpp</code>
+|-
+| Witness serialization (BIP144 marker/flag) and weight (<code>WITNESS_SCALE_FACTOR=4</code>, <code>MAX_BLOCK_WEIGHT=4000000</code>) || complete || <code>primitives/transaction.h</code>, <code>primitives/block.cpp</code>
+|-
+| bech32 + native witness address layer (BIP173) || implemented, CI-green || reference PR A
+|-
+| <code>getnewaddress</code> address types (legacy/p2sh-segwit/bech32) || implemented, regtest-verified spendable || reference PR B
+|-
+| Activation signaling || '''unresolved — this DIP''' || <code>miner.cpp</code>, <code>chainparams.cpp</code>
+|}
+
+The address/wallet layer has been verified end-to-end on regtest: all three address types produce correctly-encoded addresses (regtest <code>dcrt1...</code> for bech32, <code>2N...</code>/P2SH for p2sh-segwit), accept funds via <code>sendtoaddress</code>, and confirm as received after mining. These are non-consensus and can proceed independently of the activation decision.
+
+== Activation options (presented neutrally) ==
+
+Each option resolves the <code>nVersion</code> collision differently. They differ materially in risk, in ecosystem-coordination cost, and in how much new, unaudited code they introduce. This DIP does '''not''' recommend one; it asks the community and mining stakeholders to weigh them.
+
+=== Option A — Height / flag-day activation (BIP8-style or pure height) ===
+
+Skip versionbits signaling entirely. Define a mainnet activation height (or median-time-past). At that point, <code>IsWitnessEnabled()</code> returns true and <code>ContextualCheckBlock</code> begins enforcing witness commitments.
+
+'''Advantages'''
+* Completely avoids the <code>nVersion</code> collision; the miner keeps emitting version <code>4</code> and AuxPoW is untouched.
+* Simplest to reason about; no "stuck below threshold" signaling failure mode.
+* Smallest new-code surface.
+
+'''Disadvantages / open questions'''
+* No miner-driven safety valve and no abort path once the height passes; requires high-confidence ecosystem coordination (pools, exchanges, SPV wallets, explorers) before the flag day.
+* Diverges from the BIP9 mechanism Dogecoin's <code>versionbits.cpp</code> implements; that path goes unused for this deployment.
+* Choosing the height/MTP and the lead time is itself a contentious parameter.
+
+=== Option B — Relocated signaling outside the chain-ID region ===
+
+Define a Dogecoin-specific signaling convention that does not collide with the chain ID — e.g. signaling carried in the AuxPoW parent (Litecoin) coinbase, or a dedicated Dogecoin signaling field that the chain ID does not overlap.
+
+'''Advantages'''
+* Preserves a miner-signaled, BIP9-like activation with a real threshold and timeout, keeping miners in the activation loop.
+
+'''Disadvantages / open questions'''
+* Merge mining means the entity producing the signal is a Litecoin miner; signaling semantics must be defined across both chains' coinbase structures. This is novel and unaudited.
+* Requires bespoke <code>VersionBitsState</code>-equivalent logic and a full new test suite; cannot reuse Bitcoin's machinery directly.
+* Highest implementation complexity and the largest surface for subtle bugs.
+
+=== Option C — "Always-AuxPoW fork" first, then standard BIP9 ===
+
+The <code>miner.cpp</code> FIXME points here ("Active version bits after the always-auxpow fork"). First execute a consensus change making AuxPoW mandatory and freeing the high bits of <code>nVersion</code>, after which unmodified BIP9 signaling becomes possible.
+
+'''Advantages'''
+* Once complete, Bitcoin's versionbits code works as written; SegWit and all future soft forks use the standard mechanism.
+
+'''Disadvantages / open questions'''
+* Requires its own prior consensus change (the always-AuxPoW fork), which itself needs an activation method — a chicken-and-egg problem that pushes the signaling question up one level rather than answering it.
+* Multi-stage program, not a single deployment; the longest path to shipped SegWit.
+
+== Specification (common to all options) ==
+
+Independent of the activation mechanism chosen, the deployed feature is SegWit as defined by the required BIPs, with these Dogecoin specifics:
+
+* '''Deployment parameters.''' <code>consensus.vDeployments[DEPLOYMENT_SEGWIT]</code> — bit 1 is retained for compatibility with the inherited code, but its meaning depends on the option chosen (Option A makes the bit irrelevant; Options B/C give it signaling semantics). Start time, timeout/height, and threshold are '''deliberately left unspecified''' in this draft pending the option decision.
+* '''Network HRPs (BIP173).''' <code>doge</code> (mainnet), <code>tdge</code> (testnet), <code>dcrt</code> (regtest). Already implemented.
+* '''Witness commitment, weight, and script rules''' are byte-for-byte the inherited Bitcoin behavior; this DIP does not modify them.
+* '''AuxPoW interaction.''' The chosen option must specify exactly how signaling (if any) coexists with <code>nAuxpowChainId</code> bit-packing, and must not weaken the strict chain-ID check in PoW validation.
+
+== Backwards compatibility ==
+
+SegWit is a soft fork: pre-SegWit nodes continue to follow the chain and accept SegWit blocks as valid (witness data is segregated and not seen by old nodes via BIP144's <code>NO_WITNESS</code> serialization). However:
+
+* '''SPV wallets, block explorers, and exchanges''' that parse <code>nVersion</code> directly must be reviewed under whichever option is chosen, especially Option B which changes signaling semantics.
+* '''Non-upgraded miners''' producing blocks after activation must not produce invalid witness commitments; under Option A this is a coordination requirement, under B/C a signaling requirement.
+* Any address-layer rollout (already implemented) is backwards compatible: legacy address generation is unchanged and remains the default.
+
+== Economic and ecosystem analysis ==
+
+The following uses on-chain figures current as of 2026-06-16 to ground the cost/benefit case. Figures should be re-pulled before the DIP advances, but the orders of magnitude are stable and shape the argument.
+
+'''Current network baseline (2026-06-16):'''
+
+{| class="wikitable"
+! Metric !! Value
+|-
+| Average block size || ~7.98 KB
+|-
+| Maximum block size || 1,000 KB (1 MB)
+|-
+| Block fullness || ~0.8% of cap
+|-
+| Average block time || ~1m 3s
+|-
+| Transactions / 24h || ~23,944
+|-
+| Average transaction fee || 0.406 DOGE (~$0.035), ~0.00093 DOGE/byte
+|-
+| Median transaction fee || 0.098 DOGE (~$0.0086)
+|-
+| Block reward || 10,000 DOGE (fixed subsidy) + ~6.67 DOGE fees
+|-
+| Fees as share of block reward || ~0.07%
+|-
+| Full blockchain size || ~62.26 GB
+|}
+
+Three conclusions follow.
+
+* '''Capacity is not the motivation.''' Dogecoin blocks run at well under 1% of the 1 MB limit. SegWit's effective capacity increase (<code>MAX_BLOCK_WEIGHT = 4,000,000</code>, <code>WITNESS_SCALE_FACTOR = 4</code>) is therefore irrelevant to present demand — there is no congestion to relieve. The case for SegWit on Dogecoin rests entirely on (a) the transaction-malleability fix and (b) enabling second-layer protocols, '''not''' on throughput. This should be stated plainly so the proposal is not mis-argued as a scaling change.
+* '''The fixed-subsidy concern is small in practice.''' Because fees are ~0.07% of the 10,000 DOGE block reward, the interaction between larger blocks and the no-halving subsidy is economically negligible today: miner revenue is overwhelmingly subsidy, not fees, so witness-discounted capacity does not meaningfully shift mining economics in the current regime. The longer-term question — what happens to fee pressure if and when second-layer usage grows — remains open but is not a near-term blocker.
+* '''Node-operator cost is modest but real.''' Witness data adds storage and bandwidth per block. Against a ~62 GB chain and ~8 KB average blocks, the marginal cost of witness data at current usage is small, but the DIP should acknowledge it and note that the cost scales only with actual SegWit adoption, not with the activation itself (dormant capacity costs nothing).
+
+'''Open items requiring stakeholder input (not resolvable from on-chain data):'''
+
+* '''Merge-mining incentives.''' Dogecoin is merge-mined with Litecoin, so under any signaling scheme (Option B) the signaling entity is a Litecoin pool operator. Their incentive to signal a Dogecoin-only soft fork is not obvious and must be solicited directly from major pools before a signaling-based option is viable.
+* '''Second-layer unlock.''' SegWit is a prerequisite for the payment-channel and CSV work in prior DIP drafts; the value of those downstream capabilities is the core of the benefit case and should be quantified by their proponents.
+* '''Ecosystem readiness.''' A survey of major exchanges, wallets, explorers, and payment processors for SegWit/bech32 (<code>doge1...</code>) support should precede any flag-day (Option A) commitment, since Option A has no abort path.
+
+== Reference implementation ==
+
+The non-activating portions are implemented and verified:
+
+* bech32 + native witness address layer (BIP141/143/147/173) — CI-green across the full build matrix.
+* <code>getnewaddress</code> address types — regtest-verified spendable for legacy, p2sh-segwit, and bech32.
+
+The activation portion (the <code>IsWitnessEnabled</code> un-gate and <code>nTimeout</code> change) is maintained as a '''DO NOT MERGE''' reference commit only, isolating the activation surface for this DIP. It is intentionally inert (see "Current code state") and must not be merged until an option is chosen and its parameters specified.
+
+A companion technical note on the AuxPoW/versionbits collision and the option analysis accompanies this DIP.
+
+== Open questions for discussion ==
+
+# Which activation option (A / B / C), with explicit rationale on the merge-mining interaction?
+# If a signaling-based option (B/C): how does signaling coexist with <code>nAuxpowChainId</code> bit-packing, and what are the threshold / window / timeout?
+# If Option A: what activation height/MTP and lead time, and what is the ecosystem-coordination plan with no abort path?
+# Economic review of increased block weight against the fixed 10,000 DOGE subsidy and the resulting fee market.
+# Reconciliation of the <code>nExpectedVersion</code> / <code>WarningBitsConditionChecker</code> path (<code>validation.cpp</code>) with whatever signaling scheme is chosen, to avoid spurious unknown-versionbit warnings.
+# Migration plan for SPV wallets, explorers, and exchanges that parse <code>nVersion</code>.
+
+== References ==
+
+* BIP141 — Segregated Witness (Consensus layer)
+* BIP143 — Transaction Signature Verification for Version 0 Witness Program
+* BIP144 — Peer Services
+* BIP147 — Dealing with dummy stack element malleability (NULLDUMMY)
+* BIP173 — Base32 address format for native v0-16 witness outputs (bech32)
+* BIP9 — Version bits with timeout and delay
+* BIP8 — Version bits with lock-in by height
+
+== Copyright ==
+
+This document is licensed under the BSD-2-Clause license.

@@ -1,0 +1,261 @@
+<pre>
+  DIP: (unassigned, do not self-assign; editor will number)
+  Layer: Consensus (soft fork; hard-fork variant for full versionbits)
+  Title: Activating SegWit and MimbleWimble on AuxPoW Dogecoin despite the block-version collision
+  Author: xanimo <bluezr@dogecoin.com>
+  Comments-URI: (to be assigned)
+  Status: Draft
+  Type: Standards Track
+  Created: 2026-07-11
+  License: BSD-2-Clause
+  Requires: BIP34 (supermajority mechanism), BIP141, BIP143, BIP147; optionally BIP9
+  Replaces: (none)
+</pre>
+
+Draft for discussion. This document specifies why SegWit, and any other
+BIP9-signalled soft fork, cannot currently activate on Dogecoin, and presents two
+ways to resolve it. Resolution A is a base-version supermajority latch, the
+BIP34/65 mechanism reading only <code>GetBaseVersion()</code>, which sidesteps
+the collision entirely, needs no change to the AuxPoW encoding, and has now been
+proven end to end: it activates SegWit at base version 5 and MimbleWimble
+Extension Blocks at base version 6 on regtest, with the full MWEB peg, spend and
+multi-node relay stack running on top. Resolution B is a versioned AuxPoW epoch,
+<code>nAuxPowVersion = 2</code>, which relocates chain-ID validation out of
+<code>nVersion</code> and so frees the whole field for native BIP9 versionbits,
+at the cost of a merge-mining-coordinated hard fork. This revision recommends
+Resolution A for activating SegWit and MWEB now, and keeps Resolution B as the
+longer-term answer for when many independent BIP9 deployments are needed. No
+consensus code path may be enabled on mainnet or testnet until this DIP, or its
+successor, is assigned and accepted.
+
+== Abstract ==
+
+Dogecoin's 32-bit block <code>nVersion</code> is overloaded. It carries the base
+block version, the AuxPoW flag, and in bits 16-31 the AuxPoW chain ID
+(<code>0x0062</code>). BIP9 versionbits requires the top three bits to equal
+<code>001</code> and uses bits 0-28 for signalling. These two schemes claim the
+same high bits, so no assignment of the field satisfies both. As a result
+<code>src/miner.cpp</code> hardcodes the block version,
+<code>ComputeBlockVersion()</code> is commented out, and SegWit can never reach
+<code>LOCKED_IN</code> under versionbits.
+
+Two resolutions follow. (A) Activate BIP9-style soft forks by base-version
+supermajority: gate activation on <code>IsSuperMajority()</code> over
+<code>GetBaseVersion() = nVersion % 256</code>, which never inspects the chain-ID
+bits, and latch the result so it cannot revert. This is a soft fork, it reuses
+the existing BIP34/65 activation path, it leaves the AuxPoW encoding and
+merge-mining untouched, and it is implemented and proven for SegWit and MWEB.
+(B) Introduce <code>nAuxPowVersion = 2</code>, relocating chain-ID validation out
+of <code>nVersion</code> so the whole field becomes a native BIP9 versionbits
+field. That is a hard fork requiring merge-mining coordination, worthwhile only
+if the breadth of native versionbits, which is 29 independent bits, is needed.
+This DIP recommends (A) for the immediate goal and documents (B) as the future
+path.
+
+== Motivation ==
+
+SegWit activation on Dogecoin is blocked by a field collision, not by missing
+SegWit code. The <code>segwit: DO NOT MERGE, consensus activation</code> commit
+on Dogecoin Core explicitly defers the activation mechanism to a DIP for exactly
+this reason. Resolving it also unblocks every future BIP9 soft fork on Dogecoin.
+
+== The problem ==
+
+The block-version bit layout inherited from Namecoin AuxPoW
+(<code>src/primitives/pureheader.h</code>) is:
+
+<pre>
+  bits  0.. 7  base block version   (GetBaseVersion = nVersion % 256)
+  bit      8   VERSION_AUXPOW flag   (1 << 8)
+  bits  9..15  reserved
+  bits 16..31  AuxPoW chain ID       (GetChainId = nVersion >> 16)
+</pre>
+
+Dogecoin's chain ID is <code>0x0062</code>, which is 98, "Josh Wise!", so a
+modern header has <code>nVersion = 0x0062____</code>.
+
+BIP9 versionbits requires:
+
+<pre>
+  bits 29..31  top-3-bit selector, must equal 001  (VERSIONBITS_TOP_BITS = 0x20000000)
+  bits  0..28  deployment signalling bits
+</pre>
+
+Chain ID <code>0x0062</code> places <code>000</code> in the top-3-bit selector,
+never the <code>001</code> BIP9 demands, and its set bits (17/21/22) overlap
+BIP9's signalling range. Concretely:
+
+* <code>src/miner.cpp</code> sets <code>nVersion = VERSIONBITS_LAST_OLD_BLOCK_VERSION</code> and calls <code>SetBaseVersion(nVersion, nChainId)</code>. <code>CPureBlockHeader::SetBaseVersion</code> asserts <code>nBaseVersion < VERSION_AUXPOW</code>, under 256, and force-packs the chain ID into bits 16-31, so a BIP9 version such as <code>0x20000002</code> cannot pass through it.
+* Validation (<code>src/dogecoin.cpp: CheckAuxPowProofOfWork</code>) reads <code>block.GetChainId()</code> from bits 16-31 and rejects under <code>fStrictChainId</code> if those bits are not <code>0x0062</code>.
+
+So <code>ComputeBlockVersion()</code> is deliberately disabled in the miner and
+the <code>nTimeout</code> change in the DO-NOT-MERGE commit is inert.
+
+== Resolution A: base-version supermajority activation (proven, recommended) ==
+
+The collision only exists because BIP9 needs the whole 32-bit field. Dogecoin
+already activates soft forks (BIP34, BIP65, BIP66) without versionbits, by
+counting how many recent blocks carry a base version at or above a threshold,
+which is what <code>IsSuperMajority()</code> does. That mechanism reads
+<code>GetBaseVersion() = nVersion % VERSION_AUXPOW</code>, bits 0-7 only, and
+never inspects the chain-ID bits 16-31. So it composes with AuxPoW for free: the
+chain-ID encoding, <code>SetBaseVersion</code>,
+<code>CheckAuxPowProofOfWork</code> and the merge-mining commitment are all
+untouched.
+
+A deployment is configured on a chain by two consensus parameters, a start
+height and an enforcing base version, and activates when a supermajority of
+blocks in the rolling window signal at least that base version at or after the
+start height. The result is latched: once the supermajority is first met,
+activation is recorded on the block index and inherited monotonically by
+descendants, so it can never revert if signalling later drops. Latching is
+non-negotiable for MWEB, whose extension blocks hold funds.
+
+<pre>
+  consensus params:  nSegwitStartHeight / nSegwitEnforceVersion   (SegWit,  base version 5)
+                     nMwebStartHeight   / nMwebEnforceVersion     (MWEB,    base version 6)
+  predicate:         IsWitnessEnabled / IsMWEBEnabled  ->  IsXxxLatched
+                                                       ->  IsSuperMajority(enforceVersion, ..)
+                                                            comparing GetBaseVersion() only
+  miner:             -blockversion=5 / =6  (SetBaseVersion keeps the chain ID intact)
+</pre>
+
+Base versions are ordered, so a higher rung signals every lower one. A
+base-version-6 block signals both SegWit (v5) and MWEB (v6), which means MWEB
+cannot activate before or without SegWit. Each future soft fork takes the next
+rung (v7, v8, and so on).
+
+This is a soft fork. Old nodes still accept v5 and v6 blocks, since their base
+version exceeds the BIP34 and BIP65 thresholds and their chain ID is unchanged,
+and the new rules are a subset, since unknown witness and extension outputs are
+anyone-can-spend to them. No hard fork, no merge-mining change, no history
+rewrite.
+
+Branch <code>feat/phase0-version5-activation</code> carries the SegWit v5
+substrate with a passing functional test,
+<code>qa/rpc-tests/segwit-version5-activation.py</code>: SegWit stays inactive
+below the start height and below the threshold, activates on the supermajority,
+and stays active when signalling stops. Branch <code>mweb</code> layers MWEB on
+the identical substrate at base version 6 and runs the full stack on top, which
+is activation, peg-in and peg-out, in-MWEB spend, multi-transaction blocks,
+cryptographic validation and multi-node relay, with functional tests
+<code>mweb-version6-activation.py</code> for the single-node lifecycle and
+<code>mweb-p2p-relay.py</code> for two-node compact-block relay.
+
+The base-version byte is 8 bits and the ladder is monotonic, so it comfortably
+serves a handful of sequenced soft forks but does not give the 29 independent,
+unordered signalling bits of native versionbits. When that breadth is needed,
+Resolution B is the answer. For SegWit and MWEB it is not, which is why
+Resolution A is recommended here.
+
+== Resolution B: free the field via an AuxPoW v2 epoch ==
+
+The remainder of this document specifies Resolution B, which relocates chain-ID
+validation out of <code>nVersion</code> so the field becomes a native BIP9
+versionbits field. It is the heavier, longer-term option, a
+merge-mining-coordinated hard fork, and is retained for the case where native
+versionbits breadth is required.
+
+== Prior art: patricklodder's 2016 nAuxPowVersion ==
+
+The <code>1.10.1-aux2-*</code> branches (dogecoin/dogecoin PRs #1339, #1342,
+#1344, #1347) began the fix but were merged only into the abandoned
+<code>1.10.1-dev</code> branch and never forward-ported to master. Three moves
+matter:
+
+# Remove CBlockVersion to prepare for BIP9 compatibility (#1339), which collapsed the <code>CBlockVersion</code> wrapper back to a plain <code>int32_t nVersion</code> so the field could be reinterpreted. Today only a comment in <code>pureheader.h</code> remembers this.
+# Make AuxPoW consensus params versionable (#1344), which replaced <code>bool fAllowAuxPow</code> with <code>int nAuxPowVersion</code>, so version-field rules can fork by epoch: <code>0</code> is pre-AuxPoW, <code>1</code> is AuxPoW with chain ID in <code>nVersion</code> which is the status quo, and <code>2</code> is AuxPoW with chain ID validated out-of-band and <code>nVersion</code> freed for BIP9, which is the target here.
+# [wip] contextualize version-based auxpow checks, which split the monolithic <code>CheckAuxPowProofOfWork</code> into a context-free proof-of-work check plus a height-aware <code>ContextualCheckAuxPowFlags</code>, so chain-ID and flag interpretation becomes epoch-dependent. This split is the seam a v2 epoch needs.
+
+What survived into master is the height-indexed consensus tree
+(<code>Consensus::Params::pLeft/pRight/nHeightEffective</code> plus
+<code>GetConsensus(height)</code>), <code>fAllowLegacyBlocks</code>,
+<code>nAuxpowChainId</code> and <code>fStrictChainId</code>. The
+<code>nAuxPowVersion</code> lever and the check split did not.
+
+== Specification ==
+
+=== Groundwork (behaviour-preserving, shipped inert) ===
+
+The accompanying Dogecoin Core change introduces the lever without changing any
+validation outcome, because no epoch is v2:
+
+{|
+! File !! Change !! Effect today
+|-
+| consensus/params.h || add <code>int nAuxPowVersion</code> || none (new field)
+|-
+| chainparams.cpp || <code>nAuxPowVersion = 0</code> on pre-AuxPoW epochs, <code>= 1</code> on AuxPoW epochs (main/test/regtest) || none, since <code>nAuxPowVersion < 1</code> is exactly the epochs where <code>fAllowLegacyBlocks == true</code>
+|-
+| validation.cpp || gate the "early auxpow block" rejection on <code>nAuxPowVersion < 1</code> instead of <code>fAllowLegacyBlocks</code> || none (equivalent set)
+|-
+| miner.cpp || branch: <code>nAuxPowVersion >= 2</code> uses <code>ComputeBlockVersion()</code>; else the existing hardcoded path || none, since no epoch is v2 and <code>else</code> always runs
+|}
+
+=== Version 2 activation (Resolution B) ===
+
+A v2 epoch is a new <code>Consensus::Params</code> node with
+<code>nAuxPowVersion = 2</code> at a chosen <code>nHeightEffective</code>. For
+blocks in a v2 epoch:
+
+# The chain ID must move out of band. Today the AuxPoW chain ID lives in <code>nVersion</code> bits 16-31 and is read straight from the header (<code>block.GetChainId()</code>). Freeing the field for versionbits means those bits no longer carry the chain ID, so it MUST be validated from somewhere else, either consensus parameters (<code>nAuxpowChainId</code>) or an explicit commitment carried in the AuxPoW or parent-coinbase structure, with the check relocated into <code>ContextualCheckAuxPowFlags</code>. <code>CheckAuxPowProofOfWork</code> and <code>CAuxPow::check</code> MUST NOT call <code>block.GetChainId()</code> for v2 blocks. This out-of-band chain-ID commitment is the crux of Resolution B. It is what makes the change a merge-mining-coordinated hard fork rather than a client-only change, because the chain ID a pool commits to in the parent (Litecoin) coinbase changes, and so does how verifiers locate it. Resolution A avoids this entirely by leaving the chain ID in <code>nVersion</code> and never asking versionbits to share the field.
+# <code>nVersion</code> MUST be interpreted as a BIP9 versionbits field, with top three bits <code>001</code>, and the miner MUST populate it via <code>ComputeBlockVersion()</code>.
+# SegWit (BIP141/143/147) then activates as an ordinary BIP9 deployment after the v2 epoch is live.
+
+== Open questions Resolution B must resolve ==
+
+These are specific to Resolution B. Resolution A does not face them, since it
+keeps the v1 encoding and reuses the existing supermajority activation path.
+
+# Out-of-band chain-ID commitment, which is merged-mining compatibility. The chain ID committed in the parent (Litecoin) coinbase is what pools mine against. Moving it out of <code>nVersion</code> is a coordinated change with the merge-mining ecosystem, not a client-only fork, so the parent-side commitment format, where a verifier reads the chain ID from, and a miner-coordination plan must all be specified. This is the central cost of Resolution B; see Specification point 1.
+# Activation mechanism. BIP9 cannot bootstrap itself here, which is the whole problem. Evaluate flag-day or height activation of the v2 epoch followed by SegWit as a normal BIP9 deployment, BIP8-style forced activation, or a one-off version-handover window.
+# <code>SetBaseVersion</code> and <code>GetChainId</code> semantics for v2, including the regtest <code>-blockversion</code> override in <code>miner.cpp</code>, which still routes through <code>SetBaseVersion</code>, and the assertions in <code>pureheader.cpp</code>.
+# Backwards validation. All historical (v1) blocks must keep validating under their own epoch's rules via the height tree, and the context-free versus contextual check split must preserve exactly when each historical block is accepted or rejected.
+
+One earlier open question is now resolved. It asked whether it is worth a hard
+fork purely to enable versionbits, versus a Dogecoin-specific activation that
+keeps the v1 encoding and signals SegWit by another channel. Resolution A
+answers it: the Dogecoin-specific activation exists, it is a soft fork, and it is
+demonstrated by branch <code>feat/phase0-version5-activation</code> with the
+functional test <code>qa/rpc-tests/segwit-version5-activation.py</code> for
+SegWit at base version 5, and by branch <code>mweb</code> with
+<code>qa/rpc-tests/mweb-version6-activation.py</code> and
+<code>qa/rpc-tests/mweb-p2p-relay.py</code> for MimbleWimble at base version 6,
+full stack. For SegWit and MWEB the hard fork is therefore unnecessary, and
+Resolution B remains only for a future need for native versionbits breadth.
+
+== Backwards compatibility ==
+
+Resolution A is a soft fork. v5 and v6 blocks carry a base version above the
+BIP34/65 thresholds with the chain ID unchanged, so pre-upgrade nodes accept
+them, and the new rules are a subset, since unknown witness and extension
+outputs are anyone-can-spend to old nodes. No history is rewritten.
+
+Resolution B is a hard fork at the v2 <code>nHeightEffective</code>. Pre-v2
+nodes reject v2 blocks, whose version field parses as an unexpected chain ID,
+and v2 nodes reject pre-v2 blocks. All history remains valid under the
+height-indexed consensus tree.
+
+== Reference implementation ==
+
+Resolution A is recommended, implemented and tested.
+
+* Branch <code>feat/phase0-version5-activation</code> carries the SegWit v5 supermajority-latch substrate. Functional test <code>qa/rpc-tests/segwit-version5-activation.py</code> exercises all four activation points: inactive below the start height, inactive below the threshold, active on the supermajority, and still active after signalling stops, which is the latch.
+* Branch <code>mweb</code> carries MimbleWimble Extension Blocks layered on the identical substrate at base version 6, with the full peg, spend and relay stack. Functional tests are <code>qa/rpc-tests/mweb-version6-activation.py</code> for the single-node path (activation, peg-in, in-MWEB spend, peg-out, latch, multi-transaction block) and <code>qa/rpc-tests/mweb-p2p-relay.py</code> for two-node compact-block relay of extension blocks and MWEB transactions. The activation predicate lives in <code>src/validation.cpp</code> (<code>IsWitnessEnabled</code> and <code>IsMWEBEnabled</code> to <code>IsSegwitLatched</code> and <code>IsMWEBLatched</code> to <code>IsSuperMajority</code> over <code>GetBaseVersion()</code>), with parameters in <code>src/consensus/params.h</code> and latch fields on <code>CBlockIndex</code> in <code>src/chain.h</code>.
+
+Resolution B is groundwork only and inert. Branch <code>segwit-split-C</code>
+carries the <code>nAuxPowVersion</code> groundwork (params, chainparams,
+validation gate, guarded miner path), present and inert. The v2 relocation of
+chain-ID validation and the activation epoch are intentionally NOT implemented
+pending acceptance of this DIP.
+
+== References ==
+
+* <code>src/primitives/pureheader.h</code>, the version-field bit layout (<code>GetBaseVersion</code>, <code>GetChainId</code>, <code>VERSION_AUXPOW</code>)
+* <code>src/miner.cpp</code>, the disabled <code>ComputeBlockVersion</code> path and the <code>-blockversion</code> and <code>SetBaseVersion</code> override
+* <code>src/dogecoin.cpp: CheckAuxPowProofOfWork</code>, chain-ID and AuxPoW-flag validation
+* Resolution A implementation: branch <code>feat/phase0-version5-activation</code> (SegWit v5) and branch <code>mweb</code> (MWEB v6), with the predicate in <code>src/validation.cpp</code>
+* Resolution A tests: <code>qa/rpc-tests/segwit-version5-activation.py</code>, <code>qa/rpc-tests/mweb-version6-activation.py</code>, <code>qa/rpc-tests/mweb-p2p-relay.py</code>
+* Resolution B groundwork: branch <code>segwit-split-C</code>; dogecoin/dogecoin PRs #1339, #1342, #1344, #1347, merged into <code>1.10.1-dev</code> in 2016
+* patricklodder branches <code>1.10.1-remove-cblockversion</code>, <code>1.10.1-aux2-consensus</code>, <code>1.10.1-aux2-nonce-chainid</code>, <code>1.10.1-aux2-mining-utils</code>
+* BIP34 and BIP65 (base-version supermajority, the mechanism Resolution A reuses), BIP9 (versionbits), BIP141/143/147 (SegWit)

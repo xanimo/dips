@@ -1,0 +1,111 @@
+<pre>
+  DIP: (unassigned — do not self-assign; editor will number)
+  Layer: Consensus (hard fork)
+  Title: Freeing the block version field for BIP9 versionbits (AuxPoW v2)
+  Author: xanimo <bluezr@dogecoin.com>
+  Comments-URI: (to be assigned)
+  Status: Draft
+  Type: Standards Track
+  Created: 2026-07-11
+  License: BSD-2-Clause
+  Requires: BIP9, BIP141, BIP143, BIP147
+  Replaces: (none)
+</pre>
+
+''' Draft for discussion. ''' This document specifies why SegWit (and any other BIP9-signalled soft fork) cannot currently activate on Dogecoin, maps patricklodder's 2016 <code>nAuxPowVersion</code> groundwork onto today's versionbits code, and defines what a version-2 AuxPoW epoch must do to free the block version field. It does not pre-decide the activation mechanism; it frames the trade so the community can. No consensus code path introduced by the accompanying implementation may be enabled on mainnet or testnet until this DIP (or its successor) is assigned and accepted.
+
+== Abstract ==
+
+Dogecoin's 32-bit block <code>nVersion</code> is overloaded: it carries the base block version, the AuxPoW flag, and — in bits 16-31 — the AuxPoW chain ID (<code>0x0062</code>). BIP9 versionbits requires the top three bits to equal <code>001</code> and uses bits 0-28 for signalling. These two schemes claim the same high bits, so no assignment of the field satisfies both. As a result <code>src/miner.cpp</code> hardcodes the block version, <code>ComputeBlockVersion()</code> is commented out, and SegWit can never reach <code>LOCKED_IN</code>. This DIP proposes a versioned AuxPoW consensus parameter (<code>nAuxPowVersion</code>) whose value <code>2</code> relocates chain-ID validation out of <code>nVersion</code>, making the whole field available to versionbits.
+
+== Motivation ==
+
+SegWit activation on Dogecoin is blocked by a field collision, not by missing SegWit code. The <code>segwit: DO NOT MERGE — consensus activation</code> commit on Dogecoin Core explicitly defers the activation mechanism to a DIP for exactly this reason. Resolving it also unblocks every future BIP9 soft fork on Dogecoin.
+
+== The problem ==
+
+The block-version bit layout inherited from Namecoin AuxPoW (<code>src/primitives/pureheader.h</code>) is:
+
+<pre>
+  bits  0.. 7  base block version   (GetBaseVersion = nVersion % 256)
+  bit      8   VERSION_AUXPOW flag   (1 << 8)
+  bits  9..15  reserved
+  bits 16..31  AuxPoW chain ID       (GetChainId = nVersion >> 16)
+</pre>
+
+Dogecoin's chain ID is <code>0x0062</code> (98 — "Josh Wise!"), so a modern header has <code>nVersion = 0x0062____</code>.
+
+BIP9 versionbits requires:
+
+<pre>
+  bits 29..31  top-3-bit selector, must equal 001  (VERSIONBITS_TOP_BITS = 0x20000000)
+  bits  0..28  deployment signalling bits
+</pre>
+
+Chain ID <code>0x0062</code> places <code>000</code> in the top-3-bit selector — never the <code>001</code> BIP9 demands — and its set bits (17/21/22) overlap BIP9's signalling range. Concretely:
+
+* <code>src/miner.cpp</code> sets <code>nVersion = VERSIONBITS_LAST_OLD_BLOCK_VERSION</code> and calls <code>SetBaseVersion(nVersion, nChainId)</code>. <code>CPureBlockHeader::SetBaseVersion</code> '''asserts''' <code>nBaseVersion < VERSION_AUXPOW</code> (< 256) and force-packs the chain ID into bits 16-31; a BIP9 version such as <code>0x20000002</code> cannot pass through it.
+* Validation (<code>src/dogecoin.cpp: CheckAuxPowProofOfWork</code>) reads <code>block.GetChainId()</code> from bits 16-31 and rejects under <code>fStrictChainId</code> if those bits are not <code>0x0062</code>.
+
+So <code>ComputeBlockVersion()</code> is deliberately disabled in the miner and the <code>nTimeout</code> change in the DO-NOT-MERGE commit is inert.
+
+== Prior art: patricklodder's 2016 nAuxPowVersion ==
+
+The <code>1.10.1-aux2-*</code> branches (dogecoin/dogecoin PRs #1339, #1342, #1344, #1347) began the fix but were merged only into the abandoned <code>1.10.1-dev</code> branch and never forward-ported to master. Three moves matter:
+
+# '''Remove CBlockVersion to prepare for BIP9 compatibility (#1339)''' — collapsed the <code>CBlockVersion</code> wrapper back to a plain <code>int32_t nVersion</code> so the field could be reinterpreted. Today only a comment in <code>pureheader.h</code> remembers this.
+# '''Make AuxPoW consensus params versionable (#1344)''' — replaced <code>bool fAllowAuxPow</code> with <code>int nAuxPowVersion</code>, so version-field rules can fork by epoch: <code>0</code> = pre-AuxPoW; <code>1</code> = AuxPoW with chain ID in <code>nVersion</code> (status quo); <code>2</code> = AuxPoW with chain ID validated out-of-band, <code>nVersion</code> freed for BIP9 (the target here).
+# '''[wip] contextualize version-based auxpow checks''' — split the monolithic <code>CheckAuxPowProofOfWork</code> into a context-free proof-of-work check plus a height-aware <code>ContextualCheckAuxPowFlags</code>, so chain-ID / flag interpretation becomes epoch-dependent. This split is the seam a v2 epoch needs.
+
+What survived into master is the height-indexed consensus tree (<code>Consensus::Params::pLeft/pRight/nHeightEffective</code> + <code>GetConsensus(height)</code>), <code>fAllowLegacyBlocks</code>, <code>nAuxpowChainId</code>, and <code>fStrictChainId</code>. The <code>nAuxPowVersion</code> lever and the check split did not.
+
+== Specification ==
+
+=== Groundwork (behaviour-preserving, shipped inert) ===
+
+The accompanying Dogecoin Core change introduces the lever without changing any validation outcome, because no epoch is v2:
+
+{|
+! File !! Change !! Effect today
+|-
+| consensus/params.h || add <code>int nAuxPowVersion</code> || none (new field)
+|-
+| chainparams.cpp || <code>nAuxPowVersion = 0</code> on pre-AuxPoW epochs, <code>= 1</code> on AuxPoW epochs (main/test/regtest) || none — <code>nAuxPowVersion < 1</code> is exactly the epochs where <code>fAllowLegacyBlocks == true</code>
+|-
+| validation.cpp || gate the "early auxpow block" rejection on <code>nAuxPowVersion < 1</code> instead of <code>fAllowLegacyBlocks</code> || none (equivalent set)
+|-
+| miner.cpp || branch: <code>nAuxPowVersion >= 2</code> uses <code>ComputeBlockVersion()</code>; else the existing hardcoded path || none — no epoch is v2, <code>else</code> always runs
+|}
+
+=== Version 2 activation (this DIP's proposal) ===
+
+A v2 epoch is a new <code>Consensus::Params</code> node with <code>nAuxPowVersion = 2</code> at a chosen <code>nHeightEffective</code>. For blocks in a v2 epoch:
+
+# The AuxPoW chain ID MUST be validated from consensus parameters (<code>nAuxpowChainId</code>) and/or an explicit commitment, NOT from <code>nVersion</code> bits 16-31. <code>CheckAuxPowProofOfWork</code> / <code>CAuxPow::check</code> MUST NOT call <code>block.GetChainId()</code> for v2 blocks; this relocated check belongs in <code>ContextualCheckAuxPowFlags</code>.
+# <code>nVersion</code> MUST be interpreted as a BIP9 versionbits field (top three bits <code>001</code>), and the miner MUST populate it via <code>ComputeBlockVersion()</code>.
+# SegWit (BIP141/143/147) then activates as an ordinary BIP9 deployment '''after''' the v2 epoch is live.
+
+== Open questions the proposal must resolve ==
+
+# '''Merged-mining compatibility.''' The chain ID committed in the parent (Litecoin) coinbase is what pools mine against. A v2 encoding is a coordinated change with the merge-mining ecosystem, not a client-only fork; the parent-side commitment format and a miner-coordination plan must be specified.
+# '''Activation mechanism.''' BIP9 cannot bootstrap itself here (that is the whole problem). Evaluate: flag-day / height activation of the v2 epoch, then run SegWit as a normal BIP9 deployment; BIP8-style forced activation; or a one-off version-handover window.
+# '''SetBaseVersion / GetChainId semantics for v2''', including the regtest <code>-blockversion</code> override in <code>miner.cpp</code> (still routes through <code>SetBaseVersion</code>) and the assertions in <code>pureheader.cpp</code>.
+# '''Backwards validation.''' All historical (v1) blocks must keep validating under their own epoch's rules via the height tree; the context-free vs. contextual check split must preserve exactly when each historical block is accepted or rejected.
+# '''Is it worth a hard fork''' purely to enable versionbits, versus a Dogecoin-specific activation that keeps the v1 encoding and signals SegWit by another channel?
+
+== Backwards compatibility ==
+
+This is a hard fork at the v2 <code>nHeightEffective</code>: pre-v2 nodes reject v2 blocks (their version field parses as an unexpected chain ID) and vice versa. All history remains valid under the height-indexed consensus tree.
+
+== Reference implementation ==
+
+Dogecoin Core branch <code>segwit-split-C</code>: the <code>nAuxPowVersion</code> groundwork (params, chainparams, validation gate, guarded miner path) is present and inert. The v2 relocation of chain-ID validation and the activation epoch are intentionally NOT implemented pending acceptance of this DIP.
+
+== References ==
+
+* <code>src/primitives/pureheader.h</code> — version-field bit layout
+* <code>src/miner.cpp</code> — the disabled <code>ComputeBlockVersion</code> path
+* <code>src/dogecoin.cpp: CheckAuxPowProofOfWork</code> — chain-ID / AuxPoW-flag validation
+* dogecoin/dogecoin PRs #1339, #1342, #1344, #1347 (merged into <code>1.10.1-dev</code>, 2016)
+* patricklodder branches <code>1.10.1-remove-cblockversion</code>, <code>1.10.1-aux2-consensus</code>, <code>1.10.1-aux2-nonce-chainid</code>, <code>1.10.1-aux2-mining-utils</code>
+* BIP9 (versionbits), BIP141/143/147 (SegWit)

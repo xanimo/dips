@@ -35,7 +35,7 @@ The canonical chain and the extension block are tied together by the HogEx, a tr
 
 The supply invariant is that the sum of commitments balances against the kernel offset once fees, peg-ins and peg-outs are accounted for. A node that validates this does not learn any individual amount, but does learn that nothing was created.
 
-== What the port implements, and what it does not ==
+== What the port implements and what it does not ==
 
 Stated plainly, because "derived from Litecoin's MWEB" could mean anything from a transliteration to an approximation.
 
@@ -65,6 +65,12 @@ SegWit activates when <code>nSegwitEnforceVersion</code> base-version blocks rea
 
 Mainnet thresholds are <code>nMajorityEnforceBlockUpgrade = 1500</code> of <code>nMajorityWindow = 2000</code>, so 75% of a rolling 2000-block window, about a day and a half at target spacing.
 
+The port latches on that 75% threshold, which is not the number the plan of record names. Discussion #2264 proposed "full activation with 1900 blocks having v5 in a 2000 block window", which is 95% and corresponds to <code>nMajorityRejectBlockOutdated</code>. That figure was reaffirmed in February 2023: "I personally don't have an issue with a 95% activation requirement".
+
+Both tiers were live on this chain once. Dogecoin 1.10 enforced new rules on new-version blocks at <code>nMajorityEnforceBlockUpgrade</code> and rejected outdated blocks at <code>nMajorityRejectBlockOutdated</code>. 1.14 moved deployment to height gating through <code>BIP65Height</code>, and <code>nMajorityRejectBlockOutdated</code> has been read nowhere since. Restoring the 95% behaviour therefore means rewiring the rejection path rather than changing a constant, and that work is not in this port.
+
+Until it is, the guarantee is weaker than the plan assumes. Old-version blocks stay valid after the latch, so a base-version-4 block mined after MWEB activates is accepted and simply cannot carry extension block data. This draft records the gap rather than resolving it, because choosing between justifying 75% and implementing 95% belongs to review.
+
 === The chain as it actually is ===
 
 504,631 blocks from local block files, September 2025 through September 2026:
@@ -91,11 +97,25 @@ About twenty-one months from first appearance to universal, thirteen to half.
 
 That is a coordination problem rather than a protocol one, and it should be treated as the long pole in any MWEB schedule rather than as a deployment detail.
 
+=== Release timing ===
+
+Previous developer consensus, restated in January 2024, is to do any soft fork separately from the .0 release that bumps seven major Bitcoin Core versions. Nothing here should ride that release. The gate wants a release of its own, once the version bump has settled.
+
+=== Block weight ===
+
+SegWit as copied carries a 4x weight increase. #3911 frames the choice as three options: ship Bitcoin-style activation and take the increase, remove the witness space extension and close that path permanently, or reserve the space without activating it. Closest to consensus in #2264 has been vbyte == byte.
+
+MWEB adds its own accounting on top, because extension block data is weighed separately from the canonical block. This draft assumes vbyte == byte on the canonical side and proposes no block size increase. If the SegWit DIP picks differently, the MWEB weight accounting has to be restated against whatever it picks, so the two cannot be specified independently.
+
 == Divergence from Litecoin ==
 
 The port is not a transliteration. The differences are in ownership cryptography and they change what is proven, so they are stated here rather than left to a reader of the diff.
 
-Litecoin aggregates a fresh per-spend input key with the output's one-time key, <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, and the hash coefficient defends against an attacker-chosen <code>K_i</code>. The port verifies against the output's one-time key alone, and pins the claimed commitment and key to the spent output in consensus state at connect time. There is no attacker-chosen key in the port's equation, so there is nothing for a coefficient to defend.
+Litecoin aggregates a fresh per-spend input key with the output's one-time key, <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, and the hash coefficient defends against an attacker-chosen <code>K_i</code>. The port verifies against the output's one-time key alone, and pins the claimed commitment and key to the spent output in consensus state.
+
+That pin is connect-only. Mempool acceptance reaches <code>Transaction::Validate</code> and checks the signature against whatever key the input declares, with nothing comparing it to a real output. What carries the argument on both paths is the value balance: an input contributes the spent output's commitment <code>v*H + b*G</code>, and absorbing <code>b*G</code> into a kernel excess requires <code>b</code>, so a party who does not know the blind cannot make the body balance whatever key it declares.
+
+The aggregation is therefore not needed here, but because knowledge of the blind is required before the key question arises, not because the key is pinned everywhere. That is the load-bearing claim of the whole divergence and the first thing a reviewer should try to break.
 
 Litecoin weights the kernel verification key when a stealth excess is present and feeds both the input stealth keys and the kernel stealth excesses into its stealth balance. The port has neither key class. Both fields still parse and are committed by signatures, so the wire format is compatible, but they are cryptographically inert and the wallet never sets them.
 
@@ -104,6 +124,14 @@ The consequence is that the port's stealth balance is Litecoin's equation restri
 One divergence remains open rather than argued closed. Litecoin's range proof commits the serialized output message as extra data; the port's does not. The output signature covers the message, so the malleation Litecoin defends against there is closed by a different route, but the two mechanisms are not interchangeable for anything that verifies proofs without also verifying signatures.
 
 == Security considerations ==
+
+=== Miner opt-in ===
+
+The standing objection to extension blocks on this chain is that they are miner opt-in, put in #2264 as a conceptual issue that "means we weaken security on whatever is touching extensions". It applies here. A miner that does not implement MWEB still produces valid blocks, so the hashrate validating extension block contents is a subset of the hashrate securing the canonical chain, and funds inside the extension block are secured by that subset rather than by all of it.
+
+Litecoin ships with the same property and has run with it since 2022, which is evidence that it is survivable rather than evidence that it is sound. This draft does not resolve the objection. It records that MWEB inherits it, and that the peg-in is the point at which a holder chooses to accept it.
+
+=== Cryptography ===
 
 The cryptography has not been reviewed by anyone other than its author. Everything below is the author's own assessment and should be read as a list of what to attack, not as assurance.
 
@@ -119,7 +147,7 @@ The kernel stealth excess and input stealth key remain parsed, committed and ine
 
 Confidentiality is not anonymity. MWEB hides amounts and breaks the input-output link inside the extension block; it does not hide that a peg-in or peg-out occurred, nor their amounts.
 
-The vendored library. <code>src/secp256k1-zkp</code> is 34,977 of the port's 44,445 added lines. Its provenance is recorded in the branch, but a reviewer should treat a cryptographic library arriving inside a consensus change as the first thing to check rather than the last.
+The vendored library. <code>src/secp256k1-zkp</code> is 34,977 of the port's 44,612 added lines. Its provenance is recorded in the branch, but a reviewer should treat a cryptographic library arriving inside a consensus change as the first thing to check rather than the last.
 
 == Backwards compatibility ==
 
@@ -131,7 +159,7 @@ Wallets that do not implement MWEB continue to work unchanged and simply cannot 
 
 == Reference implementation ==
 
-Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 81 commits on top of master, 232 files, 44,614 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,600 lines: <code>src/libmw</code> 4,320, <code>src/mweb</code> 1,912, tests 1,522, and about 490 across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 83 commits on top of master, 232 files, 44,612 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,600 lines: <code>src/libmw</code> 4,320, <code>src/mweb</code> 1,906, tests 1,522, and about 490 across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
 
 Three documents in the branch carry the detail this DIP summarises:
 

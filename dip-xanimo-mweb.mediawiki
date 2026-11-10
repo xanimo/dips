@@ -43,7 +43,7 @@ Present and working: the extension block with inputs, outputs and kernels; Peder
 
 Absent relative to Litecoin: the MuSig-style input key aggregation and the kernel stealth-excess weighting, both discussed below. Neither is a missing feature so much as a different key model, and the fields they would use are still parsed and carried on the wire.
 
-Weaker than Litecoin, and worth fixing before deployment rather than before discussion: the block builder stages a transaction after checking that the staged set still balances, but Litecoin additionally revalidates the transaction, enforces the input-count and block-weight caps incrementally, checks peg-in kernel uniqueness, and checks that the peg-in outputs named by the caller match the ones the transaction carries. The port defines <code>MAX_NUM_INPUTS</code> and <code>MAX_BLOCK_WEIGHT</code> and enforces them in <code>Block::Validate</code>, not while staging, and its <code>AddTransaction</code> ignores the peg-in list it is handed.
+Where the port differs in form rather than substance: Litecoin carries running sum state and extends it with the candidate, so staging stays linear in the body size. The port revalidates the whole staged set on each addition, which is quadratic. Both refuse the same transactions; the port does not assume its offset combination is correct, which is the bug the earlier XOR aggregation had. Worth revisiting if block weight ever makes it matter.
 
 Not implemented by either: cut-through at block assembly. An output created and spent within one block appears as both. Litecoin's block builder does not do this either, so it is a property of Mimblewimble in general that neither implementation exercises here.
 
@@ -131,7 +131,7 @@ Wallets that do not implement MWEB continue to work unchanged and simply cannot 
 
 == Reference implementation ==
 
-Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 80 commits on top of master, 232 files, 44,445 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,500 lines: <code>src/libmw</code> 4,235, <code>src/mweb</code> 1,912, tests 1,438, and about 490 across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 81 commits on top of master, 232 files, 44,614 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,600 lines: <code>src/libmw</code> 4,320, <code>src/mweb</code> 1,912, tests 1,522, and about 490 across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
 
 Three documents in the branch carry the detail this DIP summarises:
 
@@ -139,7 +139,7 @@ Three documents in the branch carry the detail this DIP summarises:
 * <code>doc/mweb-crypto-divergence.md</code>, the ownership cryptography and what each signature commits to
 * <code>doc/mweb-litecoin-fix-triage.md</code>, every Litecoin commit touching MWEB after v0.21.5.6 triaged against this port
 
-Current test state: 300 unit suites pass with the wallet enabled, including 37 MWEB cases, plus <code>mweb-version6-activation.py</code> and <code>mweb-p2p-relay.py</code>.
+Current test state: 290 unit suites pass in the sanitiser tree and 300 with the wallet enabled, including 38 MWEB cases, plus <code>mweb-version6-activation.py</code> and <code>mweb-p2p-relay.py</code>.
 
 The Litecoin fix triage covers five upstream commits after the pinned tag. One is not applicable for absence, the other four are ported, two of them in a different shape than upstream because the port's structure differs. Those shape differences are recorded per commit.
 

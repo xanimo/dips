@@ -17,7 +17,7 @@ Draft for discussion. This proposes adopting Mimblewimble Extension Blocks (MWEB
 
 MWEB moves transactions into a separate block attached to each canonical block, where amounts are Pedersen commitments and ownership is proven by signature rather than by script. Value enters through a peg-in and leaves through a peg-out, and the canonical chain sees only the aggregate. Litecoin activated it as a soft fork in 2022.
 
-This DIP proposes the same structure for Dogecoin, with three things stated up front. Dogecoin cannot use BIP9 to activate it, for the same reason it cannot use BIP9 for SegWit: the chain ID occupies the <code>nVersion</code> bits versionbits signals in. MWEB depends on SegWit, so it cannot activate first. And the port's ownership cryptography is not a transliteration of Litecoin's; two key classes Litecoin uses do not exist here, which changes what the balance equations prove.
+This DIP proposes the same structure for Dogecoin, with three things stated up front. Dogecoin cannot use BIP9 to activate it, for the same reason it cannot use BIP9 for SegWit: the chain ID occupies the <code>nVersion</code> bits versionbits signals in. MWEB depends on SegWit, so it cannot activate first. And the port's ownership cryptography is not a transliteration of Litecoin's: one key class Litecoin uses is absent on the reference branch, which changes what the balance equations prove. A second branch implements it, so the two models can be compared directly.
 
 == Motivation ==
 
@@ -41,7 +41,7 @@ Stated plainly, because "derived from Litecoin's MWEB" could mean anything from 
 
 Present and working: the extension block with inputs, outputs and kernels; Pedersen commitments with Bulletproof range proofs; kernel, input and output signatures; peg-in and peg-out; the HogEx binding; append-only output and kernel MMRs with a leafset bitmap for the unspent set; stealth addresses for one-sided payments; and offset aggregation, so a block carrying several MWEB transactions balances against one header offset.
 
-Absent relative to Litecoin: the MuSig-style input key aggregation and the kernel stealth-excess weighting, both discussed below. Neither is a missing feature so much as a different key model, and the fields they would use are still parsed and carried on the wire.
+Absent relative to Litecoin on the reference branch: the MuSig-style input key aggregation, discussed below. It is not a missing feature so much as a different key model, and the field it would use is still parsed and carried on the wire. The kernel stealth-excess weighting, previously also absent, is now implemented and enforced.
 
 Where the port differs in form rather than substance: Litecoin carries running sum state and extends it with the candidate, so staging stays linear in the body size. The port revalidates the whole staged set on each addition, which is quadratic. Both refuse the same transactions; the port does not assume its offset combination is correct, which is the bug the earlier XOR aggregation had. Worth revisiting if block weight ever makes it matter.
 
@@ -109,19 +109,32 @@ MWEB adds its own accounting on top, because extension block data is weighed sep
 
 == Divergence from Litecoin ==
 
-The port is not a transliteration. The differences are in ownership cryptography and they change what is proven, so they are stated here rather than left to a reader of the diff.
+The reference branch is not a transliteration. The differences are in ownership cryptography and they change what is proven, so they are stated here rather than left to a reader of the diff.
 
-Litecoin aggregates a fresh per-spend input key with the output's one-time key, <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, and the hash coefficient defends against an attacker-chosen <code>K_i</code>. The port verifies against the output's one-time key alone, and pins the claimed commitment and key to the spent output in consensus state.
+Litecoin aggregates a fresh per-spend input key with the output's one-time key, <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, and the hash coefficient defends against an attacker-chosen <code>K_i</code>. The reference branch verifies against the output's one-time key alone, and pins the claimed commitment and key to the spent output in consensus state.
 
-That pin is connect-only. Mempool acceptance reaches <code>Transaction::Validate</code> and checks the signature against whatever key the input declares, with nothing comparing it to a real output. What carries the argument on both paths is the value balance: an input contributes the spent output's commitment <code>v*H + b*G</code>, and absorbing <code>b*G</code> into a kernel excess requires <code>b</code>, so a party who does not know the blind cannot make the body balance whatever key it declares.
+This is a narrower departure than it first appears. Litecoin's stealth key feature bit is optional in all three places it could be required: <code>Input::BuildSignedMsg</code> falls back to <code>K_o</code> alone when the bit is clear, <code>TxBody::Validate</code> batch-verifies whatever each input builds without requiring it, and <code>Input::IsStandard</code> admits <code>features = 0x00</code>. Only Litecoin's wallet always sets it. The port therefore runs a configuration upstream's own consensus already validates, rather than one upstream would reject, and it signs strictly more under that configuration: the commitment and the output pubkey are in the port's signed message and absent from Litecoin's.
 
-The aggregation is therefore not needed here, but because knowledge of the blind is required before the key question arises, not because the key is pinned everywhere. That is the load-bearing claim of the whole divergence and the first thing a reviewer should try to break.
+The pin is connect-only, so it is not what carries the argument at relay. What carries it on both paths is the value balance: an input contributes the spent output's commitment <code>v*H + b*G</code>, and absorbing <code>b*G</code> into a kernel excess requires <code>b</code>, so a party who does not know the blind cannot make the body balance whatever key it declares.
 
-Litecoin weights the kernel verification key when a stealth excess is present and feeds both the input stealth keys and the kernel stealth excesses into its stealth balance. The port has neither key class. Both fields still parse and are committed by signatures, so the wire format is compatible, but they are cryptographically inert and the wallet never sets them.
+The aggregation is therefore not needed on two independent grounds: upstream consensus accepts the unset-bit key, and knowledge of the blind is required before the key question arises. The second is what the port would rest on if upstream ever made the bit mandatory, and it is the first thing a reviewer should try to break.
 
-The consequence is that the port's stealth balance is Litecoin's equation restricted to the keys that exist here. Remove <code>K_i</code> and <code>E'</code> from Litecoin's <code>sum(K_s) + sum(K_i) == sum(E') + x'*G + sum(K_o)</code> and it reduces to the port's. That is an argument the divergence is coherent, not a proof the scheme is sound.
+Litecoin weights the kernel verification key when a stealth excess is present and feeds both the input stealth keys and the kernel stealth excesses into its stealth balance. The kernel half is now implemented: a kernel carrying the feature bit must satisfy the weighted aggregate <code>X*H(X||X_s) + X_s</code>, its key is subtracted in the stealth balance, and a bit set over an all-zero key is rejected as non-canonical. The coefficient is what makes this load-bearing, since a plain <code>X + X_s</code> is satisfied by knowledge of <code>k</code> alone once the signer picks <code>X_s = K - X</code>, which would close the stealth balance with a key nobody owns. Removing the weighting from the verifier accepts exactly that signature, which a unit test pins by ablation rather than by argument.
+
+The input stealth key <code>K_i</code> remains the one absent class on the reference branch. The field still parses and would be committed by the input signature if the bit were set, so the wire format is compatible, but nothing verifies against it and the wallet never sets it.
+
+The consequence is that the reference branch's stealth balance is Litecoin's equation restricted to the keys that exist there. Remove <code>K_i</code> from Litecoin's <code>sum(K_s) + sum(K_i) == sum(E') + x'*G + sum(K_o)</code> and it reduces to the port's. That is an argument the divergence is coherent, not a proof the scheme is sound.
 
 One divergence remains open rather than argued closed. Litecoin's range proof commits the serialized output message as extra data; the port's does not. The output signature covers the message, so the malleation Litecoin defends against there is closed by a different route, but the two mechanisms are not interchangeable for anything that verifies proofs without also verifying signatures.
+
+=== The two key models side by side ===
+
+Because the input-key argument above is the load-bearing one, the alternative is implemented rather than only described. Two branches differ in exactly that choice and in nothing else:
+
+* <code>mweb-consensus-hardening</code> verifies an input against <code>K_o</code> alone, which is Litecoin's unset-bit branch with a wider signed message. This is the reference branch and the one the rest of this document describes.
+* <code>mweb-input-key-aggregation</code> verifies against <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, sets the stealth key bit on every spend, and carries <code>sum(K_i)</code> in the stealth balance, matching Litecoin's wallet behaviour.
+
+The second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. It exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is 185 lines across 8 files, and it is unbuilt and untested, which its commit message states. A reviewer who prefers that model should treat it as a sketch to be finished, not as an alternative that is ready.
 
 == Security considerations ==
 
@@ -143,7 +156,7 @@ The range proof carries no extra commit data, so a verifier that checks proofs w
 
 <code>TxBuilder</code> derives a sender key by hashing the coin's blind when the caller supplies none. That is deterministic rather than ephemeral and is a stand-in for a wallet-supplied key, not a design decision.
 
-The kernel stealth excess and input stealth key remain parsed, committed and inert. A future change that gives them meaning must account for every body already accepted with them set to nothing.
+The input stealth key remains parsed and inert on the reference branch. A future change that gives it meaning must account for every body already accepted with it set to nothing. The kernel stealth excess no longer has this problem: it is enforced, and MWEB has never activated on a live network, so there are no bodies to grandfather.
 
 Confidentiality is not anonymity. MWEB hides amounts and breaks the input-output link inside the extension block; it does not hide that a peg-in or peg-out occurred, nor their amounts.
 
@@ -159,7 +172,9 @@ Wallets that do not implement MWEB continue to work unchanged and simply cannot 
 
 == Reference implementation ==
 
-Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 83 commits on top of master, 232 files, 44,612 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,600 lines: <code>src/libmw</code> 4,320, <code>src/mweb</code> 1,906, tests 1,522, and about 490 across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 86 commits on top of <code>dogecoin/dogecoin</code> master, 233 files, 44,929 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,500 lines: <code>src/libmw</code> 4,470, <code>src/mweb</code> 1,910, tests 1,681, and the remainder across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
+
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-input-key-aggregation mweb-input-key-aggregation] carries the alternative input key model described above, 185 lines on top of the reference branch. Unbuilt and untested.
 
 Three documents in the branch carry the detail this DIP summarises:
 
@@ -167,7 +182,7 @@ Three documents in the branch carry the detail this DIP summarises:
 * <code>doc/mweb-crypto-divergence.md</code>, the ownership cryptography and what each signature commits to
 * <code>doc/mweb-litecoin-fix-triage.md</code>, every Litecoin commit touching MWEB after v0.21.5.6 triaged against this port
 
-Current test state: 290 unit suites pass in the sanitiser tree and 300 with the wallet enabled, including 38 MWEB cases, plus <code>mweb-version6-activation.py</code> and <code>mweb-p2p-relay.py</code>.
+Current test state on the reference branch: 295 unit suites pass in the sanitiser tree, including 43 MWEB cases, and <code>mweb-version6-activation.py</code> and <code>mweb-p2p-relay.py</code> both pass in a wallet-enabled tree. The sanitiser tree is configured <code>--disable-wallet</code>, so the two functional tests need a separate build.
 
 The Litecoin fix triage covers five upstream commits after the pinned tag. One is not applicable for absence, the other four are ported, two of them in a different shape than upstream because the port's structure differs. Those shape differences are recorded per commit.
 
@@ -177,7 +192,8 @@ The Litecoin fix triage covers five upstream commits after the pinned tag. One i
 # The activation ladder shares its blocker with SegWit. Should the two be proposed as one deployment, or does MWEB wait until SegWit has activated by whatever mechanism is chosen?
 # Who reviews the cryptography? The divergences above are argued, not proven, and the author is not a suitable reviewer of his own scheme.
 # Should the range proof commit the output message as extra data, matching Litecoin, even though the output signature already covers it?
-# Should the inert stealth excess and input stealth key fields be removed from the wire format rather than carried as parsed-and-ignored?
+# Which input key model should ship? The reference branch takes Litecoin's unset-bit branch and signs more under it; <code>mweb-input-key-aggregation</code> takes Litecoin's wallet behaviour. The first is tested and the second is not.
+# Should the inert input stealth key field be removed from the wire format rather than carried as parsed-and-ignored?
 # What activation heights and versions, and on what evidence? The census says the window is not the constraint and pool coordination is.
 # Should <code>secp256k1-zkp</code> be a subtree, a submodule, or a dependency built through <code>depends</code>?
 

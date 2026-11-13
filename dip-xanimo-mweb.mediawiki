@@ -172,7 +172,7 @@ Wallets that do not implement MWEB continue to work unchanged and simply cannot 
 
 == Reference implementation ==
 
-Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 86 commits on top of <code>dogecoin/dogecoin</code> master, 233 files, 44,929 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,500 lines: <code>src/libmw</code> 4,470, <code>src/mweb</code> 1,910, tests 1,681, and the remainder across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 84 commits on top of <code>dogecoin/dogecoin</code> master at <code>b38c83fbf1</code>, 232 files, 44,907 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,500 lines: <code>src/libmw</code> 4,470, <code>src/mweb</code> 1,910, tests 1,681, and the remainder across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
 
 Branch [https://github.com/xanimo/dogecoin/tree/mweb-input-key-aggregation mweb-input-key-aggregation] carries the alternative input key model described above, 185 lines on top of the reference branch. Unbuilt and untested.
 
@@ -182,7 +182,7 @@ Three documents in the branch carry the detail this DIP summarises:
 * <code>doc/mweb-crypto-divergence.md</code>, the ownership cryptography and what each signature commits to
 * <code>doc/mweb-litecoin-fix-triage.md</code>, every Litecoin commit touching MWEB after v0.21.5.6 triaged against this port
 
-Current test state on the reference branch: 295 unit suites pass in the sanitiser tree, including 43 MWEB cases, and <code>mweb-version6-activation.py</code> and <code>mweb-p2p-relay.py</code> both pass in a wallet-enabled tree. The sanitiser tree is configured <code>--disable-wallet</code>, so the two functional tests need a separate build.
+Current test state on the reference branch: 303 unit suites pass in the sanitiser tree, including 43 MWEB cases, and <code>mweb-version6-activation.py</code> and <code>mweb-p2p-relay.py</code> both pass in a wallet-enabled tree. The sanitiser tree is configured <code>--disable-wallet</code>, so the two functional tests need a separate build.
 
 The Litecoin fix triage covers five upstream commits after the pinned tag. One is not applicable for absence, the other four are ported, two of them in a different shape than upstream because the port's structure differs. Those shape differences are recorded per commit.
 

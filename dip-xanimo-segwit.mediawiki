@@ -11,13 +11,13 @@
   Requires: BIP141, BIP143, BIP144, BIP147, BIP173
 </pre>
 
-Draft for discussion. This document deliberately does not recommend a single activation mechanism. Its purpose is to frame the problem, present the viable options neutrally, and gather community and stakeholder input before any mechanism is chosen. Nothing here should be read as a settled decision.
+Draft for discussion. This document frames the problem and presents the candidate activation mechanisms. Options A, B and C were written before a fourth was built; that fourth, the base-version supermajority latch, is implemented and tested and is the one this draft now recommends. The other three are retained because the discussion refers to them by letter and because the tradeoffs that ruled them out are the argument for the fourth. Nothing here should be read as a settled decision.
 
 == Abstract ==
 
 This DIP proposes adding Segregated Witness (SegWit) to Dogecoin by deriving from BIP141 (segwit), BIP143 (signature verification), BIP144 (peer services), BIP147 (NULLDUMMY), and BIP173 (bech32 addresses), with the Dogecoin-specific modifications required to make activation possible on a chain whose block <code>nVersion</code> field is already used by AuxPoW.
 
-The consensus-validation, script-interpreter, serialization, and weight machinery for SegWit are already present in Dogecoin Core, inherited from Bitcoin Core, but have never been activated. A working bech32/witness address layer and <code>getnewaddress</code> wallet support have been implemented and verified on regtest. The single unresolved blocker is activation signaling: the AuxPoW chain ID occupies the same high bits of <code>nVersion</code> that BIP9 versionbits requires, so standard BIP9 miner signaling cannot work as-is. This DIP documents that collision and presents three candidate activation mechanisms for the community to choose between.
+The consensus-validation, script-interpreter, serialization, and weight machinery for SegWit are already present in Dogecoin Core, inherited from Bitcoin Core, but have never been activated. The bech32/witness address layer and <code>getnewaddress</code> wallet support are not inherited; they are implemented in the branches cited below and verified on regtest. The single unresolved blocker is activation signaling: the AuxPoW chain ID occupies the same high bits of <code>nVersion</code> that BIP9 versionbits requires, so standard BIP9 miner signaling cannot work as-is. This DIP documents that collision and presents four candidate activation mechanisms. The fourth, a base-version supermajority latch that keeps signalling inside <code>nVersion</code> but reads only the low base-version byte, sidesteps the collision without new signalling machinery and is implemented and tested on regtest; it is the recommended resolution.
 
 == Motivation ==
 
@@ -84,7 +84,7 @@ Because the miner emits version <code>4</code> and never sets bit 1, <code>Versi
 
 == What is already complete ==
 
-To scope the work correctly: the consumption side of SegWit is fully present in Dogecoin Core (inherited from Bitcoin Core 0.13 to 0.17) and verified by direct read of the reference branch. The blocker is exclusively activation signaling.
+To scope the work correctly: the consensus, script-interpreter, serialization and weight machinery is present in Dogecoin Core (inherited from Bitcoin Core 0.13 to 0.17) and verified by direct read. The address layer is not: master carries no <code>bech32.h</code>, no <code>WitnessV0KeyHash</code> and no <code>address_type</code> on <code>getnewaddress</code>, so that part is carried in the branches below rather than inherited. The consensus blocker is exclusively activation signaling.
 
 {| class="wikitable"
 ! Component !! Status !! Location
@@ -97,9 +97,9 @@ To scope the work correctly: the consumption side of SegWit is fully present in 
 |-
 | Witness serialization (BIP144 marker/flag) and weight (<code>WITNESS_SCALE_FACTOR=4</code>, <code>MAX_BLOCK_WEIGHT=4000000</code>) || complete || <code>primitives/transaction.h</code>, <code>primitives/block.cpp</code>
 |-
-| bech32 + native witness address layer (BIP173) || implemented, CI-green || reference PR A
+| bech32 + native witness address layer (BIP173) || implemented, CI-green || [https://github.com/xanimo/dogecoin/tree/segwit-A-addresses segwit-A-addresses]
 |-
-| <code>getnewaddress</code> address types (legacy/p2sh-segwit/bech32) || implemented, regtest-verified spendable || reference PR B
+| <code>getnewaddress</code> address types (legacy/p2sh-segwit/bech32) || implemented, regtest-verified spendable || [https://github.com/xanimo/dogecoin/tree/segwit-B-wallet segwit-B-wallet]
 |-
 | Activation signaling || unresolved, this DIP || <code>miner.cpp</code>, <code>chainparams.cpp</code>
 |}
@@ -108,7 +108,7 @@ The address/wallet layer has been verified end-to-end on regtest: all three addr
 
 == Activation options (presented neutrally) ==
 
-Each option resolves the <code>nVersion</code> collision differently. They differ materially in risk, in ecosystem-coordination cost, and in how much new, unaudited code they introduce. This DIP does not recommend one; it asks the community and mining stakeholders to weigh them.
+Each option resolves the <code>nVersion</code> collision differently. They differ materially in risk, in ecosystem-coordination cost, and in how much new, unaudited code they introduce. Options A, B and C are presented as written; Option D is the one this draft recommends, and the parameters it needs are still open.
 
 === Option A: height / flag-day activation (BIP8-style or pure height) ===
 
@@ -146,6 +146,25 @@ Advantages
 Disadvantages / open questions
 * Requires its own prior consensus change (the always-AuxPoW fork), which itself needs an activation method, a chicken-and-egg problem that pushes the signaling question up one level rather than answering it.
 * Multi-stage program, not a single deployment; the longest path to shipped SegWit.
+
+=== Option D: base-version supermajority latch (recommended) ===
+
+Keep signalling inside <code>nVersion</code>, but read only the low base-version byte, so the chain-ID bits are never inspected. Dogecoin already activates BIP34/65/66 this way, via <code>IsSuperMajority()</code> over <code>GetBaseVersion() = nVersion % VERSION_AUXPOW</code> (bits 0 to 7). That path never touches bits 16 to 31, so the chain-ID encoding, <code>SetBaseVersion</code>, <code>CheckAuxPowProofOfWork</code> and the merge-mining commitment are all untouched.
+
+A deployment is a start height plus an enforcing base version. It activates on a supermajority at or after the start height, and the result is latched on the block index so it cannot revert if signalling later drops, which matters for any deployment holding funds. Base versions are ordered, so a higher rung signals every lower one: a v6 block signals both SegWit (v5) and MWEB (v6), and each future soft fork takes the next rung.
+
+Advantages
+* Avoids the collision as cleanly as Option A, while keeping a real miner-signalled threshold and a safety valve.
+* Reuses the <code>IsSuperMajority</code> machinery already in the tree and already used by three deployments, rather than the bespoke logic Option B needs.
+* The signal stays in-header in the base-version byte, so it does not depend on Litecoin pool operators interpreting a parent-coinbase convention.
+* Defers Option C's hard fork until the breadth of native versionbits is actually required.
+
+Disadvantages / open questions
+* The base-version byte is 8 bits and the ladder is monotonic, so it serves a handful of sequenced soft forks but not the 29 independent, unordered bits of native versionbits. When that breadth is needed, Option C remains the answer.
+* Ordering is a constraint rather than a feature if two soft forks ever need to activate independently.
+* Old-version blocks stay valid after the latch, so the guarantee is weaker than a rejection-based threshold. Restoring <code>nMajorityRejectBlockOutdated</code> behaviour means rewiring the rejection path, which is not implemented.
+
+Implemented and tested on regtest. <code>qa/rpc-tests/segwit-version5-activation.py</code> exercises all four activation points: inactive below the start height, inactive below the threshold, active on the supermajority, and still active after signalling stops. The predicate is in <code>validation.cpp</code> (<code>IsWitnessEnabled</code> to <code>IsSegwitLatched</code> to <code>IsSuperMajority</code> over <code>GetBaseVersion()</code>), with parameters in <code>consensus/params.h</code> and latch fields on <code>CBlockIndex</code> in <code>chain.h</code>. A companion DIP covers the mechanism itself and the longer-term AuxPoW v2 epoch, where it is written up as resolution A and resolution B respectively; resolution B there is Option C here.
 
 == Specification (common to all options) ==
 
@@ -210,8 +229,11 @@ Open items requiring stakeholder input (not resolvable from on-chain data):
 
 The non-activating portions are implemented and verified:
 
-* bech32 + native witness address layer (BIP141/143/147/173), CI-green across the full build matrix.
-* <code>getnewaddress</code> address types, regtest-verified spendable for legacy, p2sh-segwit, and bech32.
+* [https://github.com/xanimo/dogecoin/tree/segwit-A-addresses segwit-A-addresses]: bech32 + native witness address layer (BIP141/143/147/173), 16 files, +526. Carries tests.
+* [https://github.com/xanimo/dogecoin/tree/segwit-B-wallet segwit-B-wallet]: <code>getnewaddress</code> address types, regtest-verified spendable for legacy, p2sh-segwit, and bech32. 1 file, +32, no tests yet.
+* [https://github.com/xanimo/dogecoin/tree/segwit-C-auxpow segwit-C-auxpow]: <code>nAuxPowVersion</code> groundwork, inert. 4 files, +42, no tests yet.
+
+All three are cherry-picked onto current master (<code>b38c83fbf1</code>) and are stacked, so they review in order. The full stack builds and passes 271 of 271 unit suites.
 
 The activation portion (the <code>IsWitnessEnabled</code> un-gate and <code>nTimeout</code> change) is maintained as a DO NOT MERGE reference commit only, isolating the activation surface for this DIP. It is intentionally inert (see "Current code state") and must not be merged until an option is chosen and its parameters specified.
 
@@ -219,7 +241,7 @@ A companion technical note on the AuxPoW/versionbits collision and the option an
 
 == Open questions for discussion ==
 
-# Which activation option (A / B / C), with explicit rationale on the merge-mining interaction?
+# Which activation option (A / B / C / D), with explicit rationale on the merge-mining interaction? If D, what start height and threshold, and is the monotonic base-version ladder an acceptable constraint against the breadth of native versionbits?
 # If a signaling-based option (B/C): how does signaling coexist with <code>nAuxpowChainId</code> bit-packing, and what are the threshold / window / timeout?
 # If Option A: what activation height/MTP and lead time, and what is the ecosystem-coordination plan with no abort path?
 # Economic review of increased block weight against the fixed 10,000 DOGE subsidy and the resulting fee market.

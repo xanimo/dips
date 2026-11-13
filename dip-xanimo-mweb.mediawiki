@@ -134,7 +134,7 @@ Because the input-key argument above is the load-bearing one, the alternative is
 * <code>mweb-consensus-hardening</code> verifies an input against <code>K_o</code> alone, which is Litecoin's unset-bit branch with a wider signed message. This is the reference branch and the one the rest of this document describes.
 * <code>mweb-input-key-aggregation</code> verifies against <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, sets the stealth key bit on every spend, and carries <code>sum(K_i)</code> in the stealth balance, matching Litecoin's wallet behaviour.
 
-The second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. It exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is 185 lines across 8 files, builds, and passes 304 unit suites including 44 MWEB cases. The coefficient is load-bearing on inputs for the same reason it is on kernels: signing the unweighted <code>k_o + k_i</code> is what a spender picking <code>K_i = K - K_o</code> could do without knowing <code>k_o</code>, and a test rejects it along with either key alone.
+The second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. It exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is 185 lines across 8 files, builds, and passes 304 unit suites including 44 MWEB cases, plus both MWEB functional tests. The coefficient is load-bearing on inputs for the same reason it is on kernels: signing the unweighted <code>k_o + k_i</code> is what a spender picking <code>K_i = K - K_o</code> could do without knowing <code>k_o</code>, and a test rejects it along with either key alone.
 
 == Security considerations ==
 
@@ -174,7 +174,7 @@ Wallets that do not implement MWEB continue to work unchanged and simply cannot 
 
 Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, 84 commits on top of <code>dogecoin/dogecoin</code> master at <code>b38c83fbf1</code>, 232 files, 44,907 insertions of which 34,977 are the <code>secp256k1-zkp</code> subtree. The hand-written surface is roughly 8,500 lines: <code>src/libmw</code> 4,470, <code>src/mweb</code> 1,910, tests 1,681, and the remainder across <code>validation.cpp</code> and <code>net_processing.cpp</code>.
 
-Branch [https://github.com/xanimo/dogecoin/tree/mweb-input-key-aggregation mweb-input-key-aggregation] carries the alternative input key model described above, 185 lines on top of the reference branch. Builds and passes 304 unit suites, 44 of them MWEB.
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-input-key-aggregation mweb-input-key-aggregation] carries the alternative input key model described above, 185 lines on top of the reference branch. Builds and passes 304 unit suites, 44 of them MWEB, and both functional tests.
 
 Three documents in the branch carry the detail this DIP summarises:
 

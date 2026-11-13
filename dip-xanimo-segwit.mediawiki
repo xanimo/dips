@@ -185,38 +185,38 @@ SegWit is a soft fork: pre-SegWit nodes continue to follow the chain and accept 
 
 == Economic and ecosystem analysis ==
 
-The following uses on-chain figures current as of 2026-06-16 to ground the cost/benefit case. Figures should be re-pulled before the DIP advances, but the orders of magnitude are stable and shape the argument.
+The following uses on-chain figures to ground the cost/benefit case. The fee and throughput rows were re-pulled on 2026-11-13 from Blockchair's Dogecoin stats endpoint and cross-checked against BlockCypher for chain height; the block-size and chain-size rows are from the original 2026-06-16 pull and were not re-verified, since the blocks endpoint rate-limited. The orders of magnitude have held across the five months and the conclusions below are unchanged.
 
-Current network baseline (2026-06-16):
+Current network baseline (2026-11-13 unless noted):
 
 {| class="wikitable"
 ! Metric !! Value
 |-
-| Average block size || ~7.98 KB
+| Average block size || ~7.98 KB (2026-06-16, not re-verified)
 |-
 | Maximum block size || 1,000 KB (1 MB)
 |-
-| Block fullness || ~0.8% of cap
+| Block fullness || under 1% of cap. 29,521 transactions over 1,343 blocks is ~22 per block; even at 1,000 bytes each that is ~2% of the 1 MB cap, and at a typical ~300 bytes ~0.7%
 |-
-| Average block time || ~1m 3s
+| Average block time || ~1m 4s (1,343 blocks in 24h)
 |-
-| Transactions / 24h || ~23,944
+| Transactions / 24h || ~29,521
 |-
-| Average transaction fee || 0.406 DOGE (~$0.035), ~0.00093 DOGE/byte
+| Average transaction fee || 0.287 DOGE (~$0.019 at $0.0655)
 |-
-| Median transaction fee || 0.098 DOGE (~$0.0086)
+| Median transaction fee || 0.034 DOGE (~$0.0022)
 |-
-| Block reward || 10,000 DOGE (fixed subsidy) + ~6.67 DOGE fees
+| Block reward || 10,000 DOGE (fixed subsidy) + ~6.3 DOGE fees
 |-
-| Fees as share of block reward || ~0.07%
+| Fees as share of block reward || ~0.063%
 |-
-| Full blockchain size || ~62.26 GB
+| Full blockchain size || ~62.26 GB (2026-06-16, not re-verified)
 |}
 
 Three conclusions follow.
 
-* Capacity is not the motivation. Dogecoin blocks run at well under 1% of the 1 MB limit. SegWit's effective capacity increase (<code>MAX_BLOCK_WEIGHT = 4,000,000</code>, <code>WITNESS_SCALE_FACTOR = 4</code>) is therefore irrelevant to present demand, since there is no congestion to relieve. The case for SegWit on Dogecoin rests entirely on (a) the transaction-malleability fix and (b) enabling second-layer protocols, not on throughput. This should be stated plainly so the proposal is not mis-argued as a scaling change.
-* The fixed-subsidy concern is small in practice. Because fees are ~0.07% of the 10,000 DOGE block reward, the interaction between larger blocks and the no-halving subsidy is economically negligible today: miner revenue is overwhelmingly subsidy, not fees, so witness-discounted capacity does not meaningfully shift mining economics in the current regime. The longer-term question, what happens to fee pressure if and when second-layer usage grows, remains open but is not a near-term blocker.
+* Capacity is not the motivation. Dogecoin blocks run at well under 1% of the 1 MB limit, and five months of growth in transaction count did not change that. SegWit's effective capacity increase (<code>MAX_BLOCK_WEIGHT = 4,000,000</code>, <code>WITNESS_SCALE_FACTOR = 4</code>) is therefore irrelevant to present demand, since there is no congestion to relieve. The case for SegWit on Dogecoin rests entirely on (a) the transaction-malleability fix and (b) enabling second-layer protocols, not on throughput. This should be stated plainly so the proposal is not mis-argued as a scaling change.
+* The fixed-subsidy concern is small in practice. Because fees are ~0.063% of the 10,000 DOGE block reward, the interaction between larger blocks and the no-halving subsidy is economically negligible today: miner revenue is overwhelmingly subsidy, not fees, so witness-discounted capacity does not meaningfully shift mining economics in the current regime. The longer-term question, what happens to fee pressure if and when second-layer usage grows, remains open but is not a near-term blocker.
 * Node-operator cost is modest but real. Witness data adds storage and bandwidth per block. Against a ~62 GB chain and ~8 KB average blocks, the marginal cost of witness data at current usage is small, but the DIP should acknowledge it and note that the cost scales only with actual SegWit adoption, not with the activation itself (dormant capacity costs nothing).
 
 Open items requiring stakeholder input (not resolvable from on-chain data):

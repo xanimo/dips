@@ -119,7 +119,7 @@ The pin is connect-only, so it is not what carries the argument at relay. What c
 
 The aggregation is therefore not needed on two independent grounds: upstream consensus accepts the unset-bit key, and knowledge of the blind is required before the key question arises. The second is what the port would rest on if upstream ever made the bit mandatory, and it is the first thing a reviewer should try to break.
 
-Litecoin weights the kernel verification key when a stealth excess is present and feeds both the input stealth keys and the kernel stealth excesses into its stealth balance. The kernel half is now implemented: a kernel carrying the feature bit must satisfy the weighted aggregate <code>X*H(X||X_s) + X_s</code>, its key is subtracted in the stealth balance, and a bit set over an all-zero key is rejected as non-canonical. The coefficient is what makes this load-bearing, since a plain <code>X + X_s</code> is satisfied by knowledge of <code>k</code> alone once the signer picks <code>X_s = K - X</code>, which would close the stealth balance with a key nobody owns. Removing the weighting from the verifier accepts exactly that signature, which a unit test pins by ablation rather than by argument.
+Litecoin weights the kernel verification key when a stealth excess is present and feeds both the input stealth keys and the kernel stealth excesses into its stealth balance. The kernel half is now implemented: a kernel carrying the feature bit must satisfy the weighted aggregate <code>X*H(X||X_s) + X_s</code>, its key is subtracted in the stealth balance, and a bit set over an all-zero key is rejected as non-canonical. The coefficient is why the weighting matters, since a plain <code>X + X_s</code> is satisfied by knowledge of <code>k</code> alone once the signer picks <code>X_s = K - X</code>, which would close the stealth balance with a key nobody owns. Removing the weighting from the verifier accepts exactly that signature, which a unit test pins by ablation rather than by argument.
 
 The input stealth key <code>K_i</code> remains the one absent class on the reference branch. The field still parses and would be committed by the input signature if the bit were set, so the wire format is compatible, but nothing verifies against it and the wallet never sets it.
 
@@ -129,12 +129,12 @@ One divergence remains open rather than argued closed. Litecoin's range proof co
 
 === The two key models side by side ===
 
-Because the input-key argument above is the load-bearing one, the alternative is implemented rather than only described. Two branches differ in exactly that choice and in nothing else:
+Because the rest of the divergence argument depends on the input-key argument above, the alternative is implemented rather than only described. Two branches differ in exactly that choice and in nothing else:
 
 * <code>mweb-consensus-hardening</code> verifies an input against <code>K_o</code> alone, which is Litecoin's unset-bit branch with a wider signed message. This is the reference branch and the one the rest of this document describes.
 * <code>mweb-input-key-aggregation</code> verifies against <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, sets the stealth key bit on every spend, and carries <code>sum(K_i)</code> in the stealth balance, matching Litecoin's wallet behaviour.
 
-The second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. It exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is a single commit on top of the reference branch. It builds, and passes the unit suite including the MWEB cases and both MWEB functional tests. The coefficient is load-bearing on inputs for the same reason it is on kernels: signing the unweighted <code>k_o + k_i</code> is what a spender picking <code>K_i = K - K_o</code> could do without knowing <code>k_o</code>, and a test rejects it along with either key alone.
+The second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. It exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is a single commit on top of the reference branch. It builds, and passes the unit suite including the MWEB cases and both MWEB functional tests. The coefficient matters on inputs for the same reason it does on kernels: signing the unweighted <code>k_o + k_i</code> is what a spender picking <code>K_i = K - K_o</code> could do without knowing <code>k_o</code>, and a test rejects it along with either key alone.
 
 == Security considerations ==
 

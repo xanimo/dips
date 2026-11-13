@@ -99,12 +99,14 @@ To scope the work correctly: the consensus, script-interpreter, serialization an
 |-
 | bech32 + native witness address layer (BIP173) || implemented, CI-green || [https://github.com/xanimo/dogecoin/tree/segwit-A-addresses segwit-A-addresses]
 |-
-| <code>getnewaddress</code> address types (legacy/p2sh-segwit/bech32) || implemented, regtest-verified spendable || [https://github.com/xanimo/dogecoin/tree/segwit-B-wallet segwit-B-wallet]
+| <code>getnewaddress</code> address types (legacy/p2sh-segwit/bech32) || implemented, regtest-verified receivable; witness outputs are not spendable until activation || [https://github.com/xanimo/dogecoin/tree/segwit-B-wallet segwit-B-wallet]
 |-
 | Activation signaling || unresolved, this DIP || <code>miner.cpp</code>, <code>chainparams.cpp</code>
 |}
 
-The address/wallet layer has been verified end-to-end on regtest: all three address types produce correctly-encoded addresses (regtest <code>dcrt1...</code> for bech32, <code>2N...</code>/P2SH for p2sh-segwit), accept funds via <code>sendtoaddress</code>, and confirm as received after mining. These are non-consensus and can proceed independently of the activation decision.
+The address/wallet layer has been verified on regtest: all three address types produce correctly-encoded addresses (regtest <code>dcrt1...</code> for bech32, <code>2N...</code>/P2SH for p2sh-segwit), accept funds via <code>sendtoaddress</code>, and confirm as received after mining, with the bech32 output appearing as <code>witness_v0_keyhash</code> and <code>ismine</code>.
+
+The witness outputs are not spendable before activation, and this is the point rather than a defect. The wallet signs such an input to completion, but the node refuses the transaction with <code>no-witness-yet</code> because <code>IsWitnessEnabled</code> is false, while a legacy output from the same batch spends normally. So the address layer is inert with respect to consensus and can ship ahead of the activation decision; what it cannot do is move funds out of a witness output until SegWit is on. <code>wallet-address-types.py</code> pins both halves of that.
 
 == Activation options (presented neutrally) ==
 
@@ -230,10 +232,10 @@ Open items requiring stakeholder input (not resolvable from on-chain data):
 The non-activating portions are implemented and verified:
 
 * [https://github.com/xanimo/dogecoin/tree/segwit-A-addresses segwit-A-addresses]: bech32 + native witness address layer (BIP141/143/147/173), 16 files, +526. Carries tests.
-* [https://github.com/xanimo/dogecoin/tree/segwit-B-wallet segwit-B-wallet]: <code>getnewaddress</code> address types, regtest-verified spendable for legacy, p2sh-segwit, and bech32. 1 file, +32, no tests yet.
-* [https://github.com/xanimo/dogecoin/tree/segwit-C-auxpow segwit-C-auxpow]: <code>nAuxPowVersion</code> groundwork, inert. 4 files, +42, no tests yet.
+* [https://github.com/xanimo/dogecoin/tree/segwit-B-wallet segwit-B-wallet]: <code>getnewaddress</code> address types for legacy, p2sh-segwit, and bech32, all regtest-verified receivable. 1 file, +32, plus <code>wallet-address-types.py</code>.
+* [https://github.com/xanimo/dogecoin/tree/segwit-C-auxpow segwit-C-auxpow]: <code>nAuxPowVersion</code> groundwork, inert. 4 files, +42, plus a case in <code>auxpow_tests.cpp</code> pinning <code>nAuxPowVersion < 1</code> against <code>fAllowLegacyBlocks</code> across every chain and epoch.
 
-All three are cherry-picked onto current master (<code>b38c83fbf1</code>) and are stacked, so they review in order. The full stack builds and passes 271 of 271 unit suites.
+All three are cherry-picked onto current master (<code>b38c83fbf1</code>) and are stacked, so they review in order. The full stack builds and passes 271 of 271 unit suites. The functional suite was run against the stack: the only failures are <code>bip65-cltv</code>, <code>bipdersig</code>, <code>smartfees</code> and <code>maxuploadtarget</code>, and the first three fail identically on unmodified master, so they are pre-existing rather than caused by this work. The first two assert that outdated-version blocks are rejected on a supermajority, which is the <code>nMajorityRejectBlockOutdated</code> path 1.14 left unused when it moved deployment to height gating.
 
 The activation portion (the <code>IsWitnessEnabled</code> un-gate and <code>nTimeout</code> change) is maintained as a DO NOT MERGE reference commit only, isolating the activation surface for this DIP. It is intentionally inert (see "Current code state") and must not be merged until an option is chosen and its parameters specified.
 

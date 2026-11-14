@@ -186,6 +186,52 @@ Current test state on the reference branch: the full unit suite passes in the sa
 
 The Litecoin fix triage covers five upstream commits after the pinned tag. One is not applicable for absence, the other four are ported, two of them in a different shape than upstream because the port's structure differs. Those shape differences are recorded per commit.
 
+== What has to be true before this is proposed for activation ==
+
+This draft proposes no schedule, and this section says what would have to hold before it could. The port is a prototype. Two rounds of adversarial review each found defects of the kinds that matter most in a consensus change that holds funds: coins taken by someone with no claim to them, nodes left on different chains, and nodes or miners stopped by a single transaction. The second round did not find less than the first, part of what it found was in the first round's fixes, and its last pass, over fees and the mempool, was still finding new ones. While review finds defects at that rate, a list of fixes says nothing about how many remain, so the conditions below are about the rate and about how the code is tested, and none of them is a date.
+
+=== Decisions this document has to make ===
+
+The extension block after the latch. Either every block carries one, as in Litecoin, or a block may leave it out, as in the port, and the two lead to different rules. Litecoin at the pinned tag refuses a block with no extension block once MWEB is active, so the pool there can only ever be spent by the HogEx of the next block, and the comparison under miner opt-in has to be restated. If a block may leave the extension block out, which is also what the 75% latch under activation implies for old-version blocks, then the protection of the pool is a consensus rule of its own and belongs in this text: only a HogEx spends a pool output or a peg-in output, and a block with no extension block creates no peg-in output. In review a block with no extension block spent a pool of 3499.998 on regtest and the upgraded node followed it. Either way the miner opt-in section states, as a number, what share of hashrate has to enforce these rules for the pool to be safe.
+
+Size, weight and fees. At present <code>CheckBlock</code> holds a block serialized with its extension block to 1 MB, <code>mw::MAX_BLOCK_WEIGHT</code> allows an extension block of 200000 weight, which is about ten times that, and the block weight section says extension data is weighed separately. This text states which limit holds, where a miner stops, what a transaction pays per unit of extension weight to be relayed, and how its extension data counts toward the mempool limit. In review a transaction of 198 kB was relayed and mined for the fee on 10 bytes, 0.0001.
+
+The kernel signature. Either a kernel without a stealth excess is invalid, or the signature commits to the key it verifies under and its message carries the excess, as in Litecoin, so that nobody but the signer can turn one valid kernel into another. At present a kernel without a stealth excess passes validation, standardness and mempool acceptance, a third party can move its excess and absorb the difference in the offset, and the challenge construction that allows it is a divergence from Litecoin that the section of that name does not list.
+
+Where the state lives. Whether the extension block state is written atomically with the chainstate, and if it is not, what a node does at start-up when the two differ, a pruned node included.
+
+The mempool and the miner. How many transactions in the mempool may spend one extension block output, whether one may replace another, what a connected block and a reorganisation remove, and how a block template carries the extension block to a miner that does not use <code>createauxblock</code>.
+
+=== The implementation stops producing consensus defects ===
+
+Every defect reported has a test in the tree that fails without its fix. The scenarios from both review rounds run with the branch's own functional tests and not from scripts kept outside it.
+
+The state is tested by construction. A randomised test drives connects, disconnects, refused blocks, blocks with and without an extension block, and restarts with the chainstate any number of blocks behind, and after every step compares the extension block state with one rebuilt from the active chain. Five of the second round's findings were of this kind and each was found by hand.
+
+The miner cannot be handed a mempool it fails on. For any set of transactions the acceptance rules admit, <code>CreateNewBlock</code> returns a template that passes the validity check it is given, and the block it becomes connects. A randomised test builds mempools out of conflicting, underpaying, oversized and incomplete transactions and checks exactly that. Five findings broke this property, and in each one block production stopped for as long as the transactions stayed in the mempool.
+
+The port agrees with Litecoin wherever this document does not say it differs. The same serialized transactions and extension blocks are accepted and refused by both, at the pinned tag, and each divergence listed above is a named exception with a test of its own.
+
+The decoders and the block builder have been fuzzed under the sanitisers.
+
+The cost of a full extension block is bounded and stated: the time to validate one and to assemble a template holding one, at the miner's limit, on named hardware. In review three transactions of 198 kB took 8 to 9 seconds to turn into a block on two cores.
+
+Two review rounds in a row, by people who did not write the code and who were given these tests, find no defect that loses funds, creates coin, leaves upgraded nodes on different chains or stops a miner.
+
+=== The cryptography has been reviewed from outside ===
+
+An audit by people who work on Mimblewimble or on <code>secp256k1-zkp</code> covers the input key model and the argument that knowledge of the blind makes the aggregation unnecessary, which has to hold against the sender of an output, who knows its blind, the kernel weighting, the range proof that commits no extra data, and the vendored library compared against its upstream at a pinned commit, with every difference accounted for. The report is public, and every finding in it is fixed or answered here.
+
+=== A public testnet has run it ===
+
+MWEB activates on a public testnet through the ladder this draft specifies, merge-mined, with upgraded and unmodified miners both finding blocks, for a period stated in advance. During it the first extension block and blocks after a gap are reorganised away on purpose, nodes are killed and restarted while blocks arrive, at least one miner tries to take the pool and peg-ins with blocks that carry no extension block, and coins are held by a wallet other than the prototype with its fixed keys. Upgraded nodes stay on one chain throughout.
+
+=== Before parameters are chosen ===
+
+SegWit's activation is settled, since this requires it. A wallet exists that derives and backs up its own keys. And this document says what is done if a flaw that endangers the pool is found after activation: the latch means MWEB cannot be switched off without stranding funds, so the response has to be decided before there are funds to strand.
+
+None of this answers the first open question, whether Dogecoin wants optional confidentiality at all.
+
 == Open questions for discussion ==
 
 # Does Dogecoin want optional confidentiality at all? Everything else here is downstream of that, and it is a question for the community rather than for this document.

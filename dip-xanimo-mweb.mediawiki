@@ -105,7 +105,7 @@ Previous developer consensus, restated in January 2024, is to do any soft fork s
 
 SegWit as copied carries a 4x weight increase. #3911 frames the choice as three options: ship Bitcoin-style activation and take the increase, remove the witness space extension and close that path permanently, or reserve the space without activating it. Closest to consensus in #2264 has been vbyte == byte.
 
-MWEB adds its own accounting on top, because extension block data is weighed separately from the canonical block. This draft assumes vbyte == byte on the canonical side and proposes no block size increase. If the SegWit DIP picks differently, the MWEB weight accounting has to be restated against whatever it picks, so the two cannot be specified independently.
+MWEB adds its own accounting on top, which in the port does not yet stand apart from the canonical block. <code>CheckBlock</code> serializes the block with its extension block and holds the result to 1 MB, so extension data and canonical transactions share one megabyte and the 200000 weight of <code>mw::MAX_BLOCK_WEIGHT</code> cannot be reached. Litecoin leaves the extension block out of that measurement. Which limit holds is a decision below. This draft assumes vbyte == byte on the canonical side and proposes no block size increase. If the SegWit DIP picks differently, the MWEB weight accounting has to be restated against whatever it picks, so the two cannot be specified independently.
 
 == Divergence from Litecoin ==
 
@@ -142,7 +142,9 @@ The second branch adds no security property over the first, for the reason given
 
 The standing objection to extension blocks on this chain is that they are miner opt-in, put in #2264 as a conceptual issue that "means we weaken security on whatever is touching extensions". It applies here. A miner that does not implement MWEB still produces valid blocks, so the hashrate validating extension block contents is a subset of the hashrate securing the canonical chain, and funds inside the extension block are secured by that subset rather than by all of it.
 
-Litecoin ships with the same property and has run with it since 2022, which is evidence that it is survivable rather than evidence that it is sound. This draft does not resolve the objection. It records that MWEB inherits it, and that the peg-in is the point at which a holder chooses to accept it.
+This is the port's property rather than one it inherits. Litecoin's <code>Node::ContextualCheckBlock</code> at v0.21.5.6 rejects a block after activation that carries no extension block as <code>mweb-missing</code>, so a miner there cannot produce a valid block without implementing MWEB. The port allows the omission because requiring an extension block forks the chain at the latch, since a 75% threshold leaves up to a quarter of hashrate producing blocks the rest would reject. What Litecoin gets from that rule has to be written down here instead, and is: only a HogEx spends a pool or peg-in output, and a block with no extension block creates no peg-in output.
+
+This draft does not resolve the objection. It records that MWEB carries it, and that the peg-in is the point at which a holder chooses to accept it.
 
 === Cryptography ===
 

@@ -35,6 +35,20 @@ The canonical chain and the extension block are tied together by the HogEx, a tr
 
 The supply invariant is that the sum of commitments balances against the kernel offset once fees, peg-ins and peg-outs are accounted for. A node that validates this does not learn any individual amount, but does learn that nothing was created.
 
+== What a wallet must do ==
+
+One rule, stated here rather than only under security considerations, because a wallet that breaks it loses its user's coins and nothing in consensus stops it.
+
+A wallet draws a fresh stealth blind for every transaction it builds, so that every kernel it produces carries a stealth excess.
+
+A transaction none of whose kernels carries one publishes its stealth offset as a scalar in the clear, and that offset is the sum of the sender keys less the one-time keys spent. A peg-in spends nothing, so for a peg-in the offset is exactly the sum of the sender keys. Whoever is relayed the transaction can therefore pick replacement sender keys with that same sum, sign the outputs again under receiver keys of their own, and leave the kernel untouched. With the address the transaction paid they derive the blind and spend the output. The re-addressed transaction keeps the txid of the one the sender signed, because a peg-in's txid does not cover the extension data, so the sending wallet shows its peg-in confirmed while the coin is someone else's. A unit test on the reference branch does this and connects the spend.
+
+A transaction that spends is not exposed the same way: the offset then includes the one-time keys of the outputs spent, which the relayer does not hold, so the sum cannot be decomposed into replacement keys.
+
+Consensus accepts such a transaction, as Litecoin's does. The reference branch does not relay one, since a kernel with no stealth excess is not standard there and Litecoin's is, but that is policy: testnet and regtest do not require standard transactions unless told to, a miner can include one regardless, and the node the wallet hands it to has read the key whether or not it relays it.
+
+Both reference wallets draw the blind unconditionally, the port in <code>TxBuilder::Build</code> and Litecoin in <code>src/libmw/src/wallet/TxBuilder.cpp</code>. Litecoin's source marks it "only needed for peg-ins or when no change". That is the condition under which omitting it is unsafe, not a reason to omit it.
+
 == What the port implements and what it does not ==
 
 Stated plainly, because "derived from Litecoin's MWEB" could mean anything from a transliteration to an approximation.

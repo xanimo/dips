@@ -43,11 +43,11 @@ A wallet draws a fresh stealth blind for every transaction it builds, so that ev
 
 A transaction none of whose kernels carries one publishes its stealth offset as a scalar in the clear, and that offset is the sum of the sender keys less the one-time keys spent. A peg-in spends nothing, so for a peg-in the offset is exactly the sum of the sender keys. Whoever is relayed the transaction can therefore pick replacement sender keys with that same sum, sign the outputs again under receiver keys of their own, and leave the kernel untouched. With the address the transaction paid they derive the blind and spend the output. The re-addressed transaction keeps the txid of the one the sender signed, because a peg-in's txid does not cover the extension data, so the sending wallet shows its peg-in confirmed while the coin is someone else's. A unit test on the reference branch does this and connects the spend.
 
-A transaction that spends is not exposed the same way: the offset then includes the one-time keys of the outputs spent, which the relayer does not hold, so the sum cannot be decomposed into replacement keys.
+A transaction that spends cannot be re-addressed that way: the offset then includes the one-time keys of the outputs spent, which the relayer does not hold, so the sum cannot be decomposed into replacement keys. What it can expose is the key of what it spends. A body that spends and creates no output has for its offset the negated sum of the one-time keys it spends, so a peg-out of one whole output publishes that output's key. The key alone moves nothing, because another kernel has to absorb the output's blind, but whoever paid the output derived that blind to build it, and with the two can spend the output to itself for as long as the peg-out is unconfirmed. A second unit test does this from the transaction's bytes and what the payer kept, and connects the payer's spend.
 
 Consensus accepts such a transaction, as Litecoin's does. The reference branch does not relay one, since a kernel with no stealth excess is not standard there and Litecoin's is, but that is policy: testnet and regtest do not require standard transactions unless told to, a miner can include one regardless, and the node the wallet hands it to has read the key whether or not it relays it.
 
-Both reference wallets draw the blind unconditionally, the port in <code>TxBuilder::Build</code> and Litecoin in <code>src/libmw/src/wallet/TxBuilder.cpp</code>. Litecoin's source marks it "only needed for peg-ins or when no change". That is the condition under which omitting it is unsafe, not a reason to omit it.
+Both reference wallets draw the blind unconditionally, the port in <code>TxBuilder::Build</code> and Litecoin in <code>src/libmw/src/wallet/TxBuilder.cpp</code>. Litecoin's source marks it "only needed for peg-ins or when no change". Those are the two cases above, a body with no inputs and a body with no outputs, and they are the condition under which omitting it is unsafe, not a reason to omit it.
 
 == What the port implements and what it does not ==
 
@@ -129,7 +129,7 @@ Litecoin aggregates a fresh per-spend input key with the output's one-time key, 
 
 This is a narrower departure than it first appears. Litecoin's stealth key feature bit is optional in all three places it could be required: <code>Input::BuildSignedMsg</code> falls back to <code>K_o</code> alone when the bit is clear, <code>TxBody::Validate</code> batch-verifies whatever each input builds without requiring it, and <code>Input::IsStandard</code> admits <code>features = 0x00</code>. Only Litecoin's wallet always sets it. The port therefore runs a configuration upstream's own consensus already validates, rather than one upstream would reject, and it signs strictly more under that configuration: the commitment and the output pubkey are in the port's signed message and absent from Litecoin's.
 
-The pin is connect-only, so it is not what carries the argument at relay. What carries it on both paths is the value balance: an input contributes the spent output's commitment <code>v*H + b*G</code>, and absorbing <code>b*G</code> into a kernel excess requires <code>b</code>, so a party who does not know the blind cannot make the body balance whatever key it declares.
+The pin needs the extension block state, so it runs where that state is at hand, at connect and at mempool acceptance, and not where a transaction is validated on its own. What carries the argument everywhere is the value balance: an input contributes the spent output's commitment <code>v*H + b*G</code>, and absorbing <code>b*G</code> into a kernel excess requires <code>b</code>, so a party who does not know the blind cannot make the body balance whatever key it declares.
 
 The aggregation is therefore not needed on two independent grounds: upstream consensus accepts the unset-bit key, and knowledge of the blind is required before the key question arises. The second is what the port would rest on if upstream ever made the bit mandatory, and it is the first thing a reviewer should try to break.
 
@@ -148,7 +148,7 @@ Because the rest of the divergence argument depends on the input-key argument ab
 * <code>mweb-consensus-hardening</code> verifies an input against <code>K_o</code> alone, which is Litecoin's unset-bit branch with a wider signed message. This is the reference branch and the one the rest of this document describes.
 * <code>mweb-input-key-aggregation</code> verifies against <code>K_agg = K_i + H(K_i||K_o)*K_o</code>, sets the stealth key bit on every spend, and carries <code>sum(K_i)</code> in the stealth balance, matching Litecoin's wallet behaviour.
 
-The second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. It exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is a single commit on top of the reference branch. It builds, and passes the unit suite including the MWEB cases and both MWEB functional tests. The coefficient matters on inputs for the same reason it does on kernels: signing the unweighted <code>k_o + k_i</code> is what a spender picking <code>K_i = K - K_o</code> could do without knowing <code>k_o</code>, and a test rejects it along with either key alone.
+For a transaction whose kernel carries a stealth excess the second branch adds no security property over the first, for the reason given above: upstream validates the unset-bit path and the port signs the wider message either way. For one whose kernel does not, it adds one. Its input key, which the wallet derives from the spend key and the output being spent, stands in the stealth offset beside the one-time key, so a body that spends and creates nothing no longer publishes the key of what it spends: run on that branch, the peg-out the unit test above takes back ends with the payer's spend refused at connect. The branch exists so a reviewer can diff two models rather than reason about which branch of upstream's rule the port takes. It is a single commit on top of the reference branch. It builds, and passes the unit suite including the MWEB cases and both MWEB functional tests. The coefficient matters on inputs for the same reason it does on kernels: signing the unweighted <code>k_o + k_i</code> is what a spender picking <code>K_i = K - K_o</code> could do without knowing <code>k_o</code>, and a test rejects it along with either key alone.
 
 == Security considerations ==
 
@@ -178,7 +178,7 @@ The input stealth key remains parsed and inert on the reference branch. A future
 
 Confidentiality is not anonymity. MWEB hides amounts and breaks the input-output link inside the extension block; it does not hide that a peg-in or peg-out occurred, nor their amounts.
 
-The vendored library. <code>src/secp256k1-zkp</code> is 34,977 of the port's 44,612 added lines. Its provenance is recorded in the branch, but a reviewer should treat a cryptographic library arriving inside a consensus change as the first thing to check rather than the last.
+The vendored library. <code>src/secp256k1-zkp</code> is 34,977 of the 46,124 lines the reference branch adds at 61d016683. Its provenance is recorded in the branch, but a reviewer should treat a cryptographic library arriving inside a consensus change as the first thing to check rather than the last.
 
 == Backwards compatibility ==
 
@@ -190,7 +190,7 @@ Wallets that do not implement MWEB continue to work unchanged and simply cannot 
 
 == Reference implementation ==
 
-Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, rebased onto <code>dogecoin/dogecoin</code> master. The great majority of the diff is the <code>secp256k1-zkp</code> subtree; the hand-written surface is roughly 8,500 lines across <code>src/libmw</code>, <code>src/mweb</code>, the tests, and a few hundred lines in <code>validation.cpp</code> and <code>net_processing.cpp</code>. Exact counts move with every rebase and are left to the branch rather than quoted here.
+Branch [https://github.com/xanimo/dogecoin/tree/mweb-consensus-hardening mweb-consensus-hardening] at <code>xanimo/dogecoin</code>, rebased onto <code>dogecoin/dogecoin</code> master. The great majority of the diff is the <code>secp256k1-zkp</code> subtree; the hand-written surface is roughly 8,000 lines of code across <code>src/libmw</code>, <code>src/mweb</code>, <code>validation.cpp</code> and <code>net_processing.cpp</code>, and 2,800 of tests. Exact counts move with every rebase and are left to the branch rather than quoted here.
 
 Branch [https://github.com/xanimo/dogecoin/tree/mweb-input-key-aggregation mweb-input-key-aggregation] carries the alternative input key model described above, one commit on top of the reference branch. Builds and passes the unit suite and both functional tests.
 

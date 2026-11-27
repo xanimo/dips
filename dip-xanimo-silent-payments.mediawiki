@@ -189,7 +189,7 @@ A wallet that does not implement this is unaffected and simply cannot send to or
 
 == Reference implementation ==
 
-[https://github.com/xanimo/dogecoin/tree/f936f17afd45359a5823862b2cb85867607c36c0 sp-on-filters]
+[https://github.com/xanimo/dogecoin/tree/d862ffe8b5e7b5e2124dff8f8f95aa995de8017f sp-on-filters]
 on xanimo/dogecoin carries the bech32 and bech32m codec, <code>src/bip352.{h,cpp}</code> with the ported BIP352 test vectors and the constant time ECDH, <code>src/index/tweakindex.{h,cpp}</code> on the background index framework, silent payment keys derived from the HD seed, the three RPCs <code>getsilentpaymentaddress</code>, <code>sendtosilentpaymentaddress</code> and <code>scansilentpayments</code>, live scanning under <code>-silentpaymentscan</code>, labels that survive a restart, and end to end functional tests.
 
 The light client half is there too, in three parts. A serving node answers <code>getsptweaks</code> with a block's tweaks, behind <code>NODE_SP_TWEAKS</code> and <code>-peersptweaks</code>. <code>GetCandidateScripts</code> builds the scripts a receiver would own from a tweak alone, which is what lets a client ask about a block it has not downloaded. <code>scansilentpaymentsfiltered</code> chains the two: it derives the candidates for each block's tweaks, asks that block's BIP158 filter whether any appear, and reads only the blocks that match. Over a regtest chain of 228 blocks where 26 carry an eligible transaction it reads 2, querying 52 candidate scripts with no false positives. That ratio is not a mainnet figure and should not be read as one, since regtest is far sparser than the real chain and the wallet held no labels. The false positive rate does not need measuring at all: the filter keeps M = 784931 and the client asks one script per tweak plus one per label held, so the chance of reading a block for nothing is about tweaks * (labels + 1) / 784931. At the mean block and no labels that is 0.011 percent; for a thousand-tweak block and a wallet holding a hundred labels it is 13 percent, which is the cost the labels section warns about showing up again on the client side. It is stacked on the BIP157 and BIP158 compact filter backport, which is unmerged and proposed as [https://github.com/dogecoin/dogecoin/pull/4031 dogecoin/dogecoin#4031].
@@ -237,13 +237,13 @@ The tweak service answers for the block it names. An <code>sptweaks</code> messa
 
 The numbers are of the rule as specified. This is met. The corpus harness has been re-run with compressed keys only and every figure above is from that run, the filter false positive rate has been measured against mainnet filters, the index has been rebuilt over the whole chain in its final layout, and the <code>getsptweaks</code> round trip has been run against mainnet at the largest range a request may name.
 
-The links are the code. Met. The links name f936f17afd, which implements the rule this text states, and the standalone branch that predated the rule is no longer linked.
+The links are the code. Met. The links name d862ffe8b5, which implements the rule this text states, and the standalone branch that predated the rule is no longer linked.
 
 Four more before the implementation is put forward for a release.
 
 A second implementation exists. A wallet that shares no code with the reference branch pays an address the branch generated and is paid by it, with and without labels. The loss this scheme can cause is a disagreement between two implementations, and with one implementation that has never been tested.
 
-The parsers have been fuzzed. The address decoder, the key extraction from a scriptSig and the <code>getsptweaks</code> handler each have a fuzz target that has run under the sanitisers, and the key extraction is compared, over consensus-valid spends, with the search BIP352's reference code performs. The first two targets are in the reference branch with that comparison and have run under the address and undefined behaviour sanitisers. The <code>getsptweaks</code> handler has no target, and neither target has been run by a fuzzer that follows coverage, so this condition is open.
+The parsers have been fuzzed. The address decoder, the key extraction from a scriptSig and the <code>getsptweaks</code> handler each have a fuzz target that has run under the sanitisers, and the key extraction is compared, over consensus-valid spends, with the search BIP352's reference code performs. All three targets are in the reference branch with that comparison and have run under the address and undefined behaviour sanitisers. The <code>getsptweaks</code> target frames a request and dispatches it through the message handler against a chain it builds, asserting the peer is disconnected exactly when its request is outside the protocol, and each of the four rules that decides this fails when it is removed from the handler. It does not reach the serving loop, since that needs a tweak index the target does not build, and no target has been run by a fuzzer that follows coverage, so this condition is open.
 
 Someone else has read the cryptography. A reviewer other than the author, who works with secp256k1, has read the ECDH path, the tagged hashes and the label derivation, including what changes when the output is a hash and not a key, and has said so in public.
 
@@ -267,7 +267,7 @@ What service bit and message names the tweak service should use. The implementat
 
 [https://github.com/bitcoin/bips/blob/master/bip-0352.mediawiki BIP352], the Bitcoin silent payments specification this derives from.
 
-[https://github.com/xanimo/dogecoin/blob/f936f17afd45359a5823862b2cb85867607c36c0/contrib/bip352/undo_corpus.py undo_corpus.py]
+[https://github.com/xanimo/dogecoin/blob/d862ffe8b5e7b5e2124dff8f8f95aa995de8017f/contrib/bip352/undo_corpus.py undo_corpus.py]
 in the reference branch, which produced the numbers above and can be re-run against any node with the blk and rev files present.
 
 The links above point at commits rather than branch tips, so they keep resolving to the code the measurements were taken against after the branches move or go away.
